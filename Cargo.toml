@@ -1,0 +1,19 @@
+[package]
+name = "rs-ulanzi-d200-linux"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+hidapi = "2.5.0"
+anyhow = "1.0"
+thiserror = "1.0"
+tokio = { version = "1", features = ["full"] }
+image = { version = "0.25.1", default-features = false, features = ["png"] }
+byteorder = "1.5.0"
+zip = "2.1.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[lib]
+name = "ulanzi_d200"
+crate-type = ["cdylib", "rlib"]
