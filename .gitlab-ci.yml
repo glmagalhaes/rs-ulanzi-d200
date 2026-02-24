@@ -1,3 +1,35 @@
+<<<<<<< HEAD
+stages:
+  - build
+  - test
+
+variables:
+  CARGO_HOME: $CI_PROJECT_DIR/.cargo
+  APT_CACHE_DIR: $CI_PROJECT_DIR/.apt
+
+cache:
+  key: "$CI_COMMIT_REF_SLUG"
+  paths:
+    - .cargo/
+    - target/
+    - .apt/
+
+before_script:
+  - apt-get update -yq
+  - apt-get install -o dir::cache::archives="$APT_CACHE_DIR" -y pkg-config libudev-dev
+
+build:
+  stage: build
+  image: rust:latest
+  script:
+    - cargo build --verbose
+
+test:
+  stage: test
+  image: rust:latest
+  script:
+    - cargo test --verbose
+=======
 # This is a GitLab CI/CD configuration file for a Rust project.
 # It defines a pipeline to test, build, and create a release for the library.
 
@@ -54,3 +86,4 @@ release:
   needs:
     - job: build
       artifacts: true
+>>>>>>> f06b088e54dca16cba3568c8de117b1c23f0374c
