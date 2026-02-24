@@ -1,0 +1,29 @@
+[package]
+name = "rs-ulanzi-d200-linux"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+async-hid = { version = "0.4.4", default-features = false, features = ["tokio"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+serde_json = "1.0"
+zip = "8.1.0"
+anyhow = "1.0"
+log = "0.4"
+env_logger = "0.11"
+byteorder = "1.5"
+pathdiff = "0.2"
+rand = "0.10"
+clap = { version = "4.4", features = ["derive"] }
+tokio = { version = "1.35", features = ["full"] }
+tokio-tungstenite = "0.21"
+futures-util = "0.3"
+url = "2.5"
+evdev = "0.12"
+async-trait = "0.1"
+chrono = "0.4"
+sysinfo = "0.30"
+image = { version = "0.24", features = ["jpeg"] }
+data-url = "0.3"
+openaction = "2.5.0"
