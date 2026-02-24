@@ -1,0 +1,72 @@
+# Ulanzi D200 Configuration
+
+# Global settings
+brightness: 100
+
+# Label styling
+label_style:
+  Align: bottom
+  Color: 0xFFFFFF
+  FontName: Roboto
+  ShowTitle: true
+  Size: 10
+  Weight: 80
+
+# OBS Studio settings (optional)
+obs:
+  host: localhost
+  port: 4444
+  password: null
+
+# Button definitions (13 buttons total, 0-12)
+buttons:
+  # Button 0 - Launch Firefox
+  - image: ./icons/firefox.png
+    label: Firefox
+    action: app
+    params:
+      name: firefox
+
+  # Button 1 - Toggle OBS scene
+  - image: ./icons/obs.png
+    label: Scene
+    action: obs
+    params:
+      action: toggle_scene
+      scene1: "Scene 1"
+      scene2: "Scene 2"
+
+  # Button 2 - Execute command
+  - image: ./icons/terminal.png
+    label: Terminal
+    action: command
+    params:
+      cmd: "gnome-terminal"
+
+  # Button 3 - Keyboard shortcut
+  - image: ./icons/keyboard.png
+    label: Shortcut
+    action: key
+    params:
+      keys: "ctrl+alt+t"
+
+  # Button 4 - Toggle recording
+  - image: ./icons/record.png
+    label: Record
+    action: obs
+    params:
+      action: toggle_recording
+
+  # Buttons 5-12 - Empty (optional)
+  - image: ./icons/Rocket_Sentry_Stratagem_Icon.png
+    label: Sentry
+    action: key
+    params:
+      keys: "ctrl+alt+t"
+  - null
+  - null
+  - null
+  - null
+  - null
+  - null
+  - null
