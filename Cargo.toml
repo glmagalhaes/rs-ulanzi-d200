@@ -26,4 +26,4 @@ chrono = "0.4"
 sysinfo = "0.30"
 image = { version = "0.24", features = ["jpeg"] }
 data-url = "0.3"
-openaction = "2.5.0"
+openaction = "2.6.0"

@@ -1,0 +1,30 @@
+stages:
+  - build
+  - test
+
+variables:
+  CARGO_HOME: $CI_PROJECT_DIR/.cargo
+  APT_CACHE_DIR: $CI_PROJECT_DIR/.apt
+
+cache:
+  key: "$CI_COMMIT_REF_SLUG"
+  paths:
+    - .cargo/
+    - target/
+    - .apt/
+
+before_script:
+  - apt-get update -yq
+  - apt-get install -o dir::cache::archives="$APT_CACHE_DIR" -y pkg-config libudev-dev
+
+build:
+  stage: build
+  image: rust:latest
+  script:
+    - cargo build --verbose
+
+test:
+  stage: test
+  image: rust:latest
+  script:
+    - cargo test --verbose
