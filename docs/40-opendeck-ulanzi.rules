@@ -1,0 +1,20 @@
+# udev rule for the Ulanzi D200 Stream Controller to allow user access.
+# This rule is specifically for the Ulanzi D200 (Vendor ID: 2207, Product ID: 0019).
+
+# If you are using a different HID device, you will need to discover its
+# Vendor and Product IDs and create a new rule file for it.
+#
+# You can find the IDs for your connected USB devices by running the 'lsusb' command.
+# For example:
+#   $ lsusb
+#   ...
+#   Bus 001 Device 005: ID 2207:0019 Ulanzi
+#   ...
+#
+# The ID is in the format VENDOR_ID:PRODUCT_ID.
+#
+# This library uses the `hidapi` crate, which requires these permissions
+# for non-root users to access the device. For more information, please
+# refer to the hidapi documentation.
+
+SUBSYSTEM=="usb", ATTRS{idVendor}=="2207", ATTRS{idProduct}=="0019", TAG+="uaccess"
