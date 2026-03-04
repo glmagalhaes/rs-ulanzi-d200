@@ -8,7 +8,7 @@ impl SystemMonitor {
     pub fn new() -> Self {
         // Initialize with partial refresh to save resources
         let mut sys = System::new_with_specifics(
-            RefreshKind::new()
+            RefreshKind::nothing()
                 .with_cpu(CpuRefreshKind::everything())
                 .with_memory(MemoryRefreshKind::everything()),
         );
@@ -21,7 +21,7 @@ impl SystemMonitor {
         self.sys.refresh_cpu_usage();
         self.sys.refresh_memory();
 
-        let cpu_usage = self.sys.global_cpu_info().cpu_usage() as u8;
+        let cpu_usage = self.sys.global_cpu_usage() as u8;
 
         let total_mem = self.sys.total_memory();
         let used_mem = self.sys.used_memory();

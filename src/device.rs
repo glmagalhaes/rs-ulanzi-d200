@@ -169,7 +169,7 @@ impl UlanziDevice {
         // 4. Convert to JPEG
         let mut jpeg_data = Vec::new();
         let mut cursor = Cursor::new(&mut jpeg_data);
-        resized.write_to(&mut cursor, image::ImageOutputFormat::Jpeg(90))?;
+        resized.write_to(&mut cursor, image::ImageFormat::Jpeg)?;
 
         // 5. Store in internal buffer
         self.button_images.insert(index, jpeg_data);
@@ -268,7 +268,7 @@ impl UlanziDevice {
                             img.resize_exact(72, 72, image::imageops::FilterType::Lanczos3);
                         let mut jpeg_data = Vec::new();
                         let mut cursor = Cursor::new(&mut jpeg_data);
-                        resized.write_to(&mut cursor, image::ImageOutputFormat::Jpeg(90))?;
+                        resized.write_to(&mut cursor, image::ImageFormat::Jpeg)?;
                         self.button_images.insert(button.index, jpeg_data);
                     }
                 }
