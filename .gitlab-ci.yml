@@ -84,8 +84,8 @@ publish-release:
       artifacts: true
     - job: build:linux:arm64
       artifacts: true
-    - job: build:windows:amd64
-      artifacts: true
+    # - job: build:windows:amd64
+    #   artifacts: true
   script:
     - echo "Creating release for $CI_COMMIT_TAG"
   release:
@@ -99,5 +99,5 @@ publish-release:
           url: '${CI_PROJECT_URL}/-/jobs/artifacts/${CI_COMMIT_TAG}/raw/target/x86_64-unknown-linux-gnu/release/rs-ulanzi-d200-linux?job=build:linux:amd64'
         - name: 'Linux aarch64 Binary'
           url: '${CI_PROJECT_URL}/-/jobs/artifacts/${CI_COMMIT_TAG}/raw/target/aarch64-unknown-linux-gnu/release/rs-ulanzi-d200-linux?job=build:linux:arm64'
-        - name: 'Windows x86_64 Binary'
-          url: '${CI_PROJECT_URL}/-/jobs/artifacts/${CI_COMMIT_TAG}/raw/target/x86_64-pc-windows-msvc/release/rs-ulanzi-d200-linux.exe?job=build:windows:amd64'
+        # - name: 'Windows x86_64 Binary'
+        #   url: '${CI_PROJECT_URL}/-/jobs/artifacts/${CI_COMMIT_TAG}/raw/target/x86_64-pc-windows-msvc/release/rs-ulanzi-d200-linux.exe?job=build:windows:amd64'
