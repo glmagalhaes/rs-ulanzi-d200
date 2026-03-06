@@ -59,7 +59,9 @@ build:windows:amd64:
   tags:
     - saas-windows-medium-amd64
   script:
-    - rustup default stable-msvc
+    - Invoke-WebRequest -Uri "https://win.rustup.rs" -OutFile "rustup-init.exe"
+    - .\rustup-init.exe -y --default-host x86_64-pc-windows-msvc --default-toolchain stable
+    - $env:Path += ";$env:USERPROFILE\.cargo\bin"
     - rustup target add x86_64-pc-windows-msvc
     - cargo build --release --target x86_64-pc-windows-msvc
   artifacts:
