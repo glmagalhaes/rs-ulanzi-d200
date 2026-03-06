@@ -26,3 +26,6 @@ sysinfo = "0.38.3"
 image = { version = "0.25.9", features = ["jpeg"] }
 data-url = "0.3"
 openaction = "2.6.0"
+
+[target.'cfg(windows)'.dependencies]
+async-hid = { version = "0.4.4", default-features = false, features = ["tokio", "win32"] }

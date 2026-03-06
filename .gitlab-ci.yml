@@ -17,6 +17,10 @@ cache:
 test:
   stage: test
   image: rust:latest
+  rules:
+    - if: $CI_COMMIT_TAG
+      when: never
+    - when: always
   before_script:
     - apt-get update -yq
   script:
@@ -25,6 +29,7 @@ test:
 # Base definition for build jobs that only run on beta-release tags
 .build_base:
   stage: build
+  allow_failure: true
   rules:
     - if: $CI_COMMIT_TAG =~ /^beta-release.*$/
 
@@ -54,33 +59,26 @@ build:linux:arm64:
       - target/aarch64-unknown-linux-gnu/release/rs-ulanzi-d200-linux
     expire_in: 30 days
 
-build:windows:amd64:
-  extends: .build_base
-  tags:
-    - saas-windows-medium-amd64
-  script:
-    - Invoke-WebRequest -Uri "https://win.rustup.rs" -OutFile "rustup-init.exe"
-    - .\rustup-init.exe -y --default-host x86_64-pc-windows-msvc --default-toolchain stable
-    - $env:Path += ";$env:CARGO_HOME\bin"
-    - rustup target add x86_64-pc-windows-msvc
-    - cargo build --release --target x86_64-pc-windows-msvc
-  artifacts:
-    paths:
-      - target/x86_64-pc-windows-msvc/release/rs-ulanzi-d200-linux.exe
-    expire_in: 30 days
+# build:windows:amd64:
+#   extends: .build_base
+#   tags:
+#     - saas-windows-medium-amd64
+#   script:
+#     - Invoke-WebRequest -Uri "https://win.rustup.rs" -OutFile "rustup-init.exe"
+#     - .\rustup-init.exe -y --default-host x86_64-pc-windows-msvc --default-toolchain stable
+#     - $env:Path += ";$env:CARGO_HOME\bin"
+#     - rustup target add x86_64-pc-windows-msvc
+#     - cargo build --release --target x86_64-pc-windows-msvc
+#   artifacts:
+#     paths:
+#       - target/x86_64-pc-windows-msvc/release/rs-ulanzi-d200-linux.exe
+#     expire_in: 30 days
 
 publish-release:
   stage: release
   image: registry.gitlab.com/gitlab-org/release-cli:latest
   rules:
     - if: $CI_COMMIT_TAG =~ /^beta-release.*$/
-  needs:
-    - job: build:linux:amd64
-      artifacts: true
-    - job: build:linux:arm64
-      artifacts: true
-    - job: build:windows:amd64
-      artifacts: true
   script:
     - echo "Creating release for $CI_COMMIT_TAG"
   release:
@@ -94,5 +92,5 @@ publish-release:
           url: '${CI_PROJECT_URL}/-/jobs/artifacts/${CI_COMMIT_TAG}/raw/target/x86_64-unknown-linux-gnu/release/rs-ulanzi-d200-linux?job=build:linux:amd64'
         - name: 'Linux aarch64 Binary'
           url: '${CI_PROJECT_URL}/-/jobs/artifacts/${CI_COMMIT_TAG}/raw/target/aarch64-unknown-linux-gnu/release/rs-ulanzi-d200-linux?job=build:linux:arm64'
-        - name: 'Windows x86_64 Binary'
-          url: '${CI_PROJECT_URL}/-/jobs/artifacts/${CI_COMMIT_TAG}/raw/target/x86_64-pc-windows-msvc/release/rs-ulanzi-d200-linux.exe?job=build:windows:amd64'
+        # - name: 'Windows x86_64 Binary'
+        #   url: '${CI_PROJECT_URL}/-/jobs/artifacts/${CI_COMMIT_TAG}/raw/target/x86_64-pc-windows-msvc/release/rs-ulanzi-d200-linux.exe?job=build:windows:amd64'
