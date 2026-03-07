@@ -126,18 +126,30 @@ impl UlanziDaemon {
         let mut telemetry_interval = interval(Duration::from_millis(self.config.stats_interval_ms));
 
         // Signal handling for graceful shutdown
-        let mut sigint = signal::unix::signal(signal::unix::SignalKind::interrupt())?;
-        let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate())?;
+        let shutdown = async {
+            #[cfg(unix)]
+            {
+                let mut sigint =
+                    signal::unix::signal(signal::unix::SignalKind::interrupt()).unwrap();
+                let mut sigterm =
+                    signal::unix::signal(signal::unix::SignalKind::terminate()).unwrap();
+                tokio::select! {
+                    _ = sigint.recv() => info!("Received SIGINT, shutting down..."),
+                    _ = sigterm.recv() => info!("Received SIGTERM, shutting down..."),
+                }
+            }
+            #[cfg(windows)]
+            {
+                let _ = signal::ctrl_c().await;
+                info!("Received Ctrl-C, shutting down...");
+            }
+        };
+        tokio::pin!(shutdown);
 
         loop {
             tokio::select! {
                 // Handle Signals
-                _ = sigint.recv() => {
-                    info!("Received SIGINT, shutting down...");
-                    break;
-                }
-                _ = sigterm.recv() => {
-                    info!("Received SIGTERM, shutting down...");
+                _ = &mut shutdown => {
                     break;
                 }
 
@@ -172,8 +184,8 @@ impl UlanziDaemon {
                 }
 
                 // Handle Device Inputs (from reader tasks)
-                Some((device_id, event)) = self.device_input_rx.recv() => {
-                    self.handle_device_event(&device_id, event).await;
+                Some((id, event)) = self.device_input_rx.recv() => {
+                    self.handle_device_event(&id, event).await;
                 }
 
                 _ = telemetry_interval.tick() => {
@@ -285,6 +297,86 @@ impl UlanziDaemon {
             BridgeEvent::DeviceDisconnected(_) => {
                 // Info only
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::mpsc;
+
+    #[tokio::test]
+    async fn test_handle_device_event_keydown() {
+        let (hw_event_tx, mut hw_event_rx) = mpsc::channel(1);
+        let config = Config::default();
+        let (_device_input_tx, device_input_rx) = mpsc::channel(1);
+        let (device_input_tx_internal, _device_input_rx_internal) = mpsc::channel(1);
+
+        let mut daemon = UlanziDaemon {
+            devices: HashMap::new(),
+            config,
+            telemetry: SystemMonitor::new(),
+            cpu_usage: 0,
+            mem_usage: 0,
+            plugin_cmd_rx: None,
+            hw_event_tx: Some(hw_event_tx),
+            device_input_rx,
+            device_input_tx: device_input_tx_internal,
+        };
+
+        let event = ButtonEvent {
+            index: 5,
+            pressed: true,
+            state: 1,
+        };
+
+        daemon.handle_device_event("test_device", event).await;
+
+        let received = hw_event_rx.recv().await.unwrap();
+        match received {
+            HardwareEvent::KeyDown { device_id, key_index } => {
+                assert_eq!(device_id, "test_device");
+                assert_eq!(key_index, 5);
+            }
+            _ => panic!("Expected KeyDown event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_device_event_keyup() {
+        let (hw_event_tx, mut hw_event_rx) = mpsc::channel(1);
+        let config = Config::default();
+        let (_device_input_tx, device_input_rx) = mpsc::channel(1);
+        let (device_input_tx_internal, _device_input_rx_internal) = mpsc::channel(1);
+
+        let mut daemon = UlanziDaemon {
+            devices: HashMap::new(),
+            config,
+            telemetry: SystemMonitor::new(),
+            cpu_usage: 0,
+            mem_usage: 0,
+            plugin_cmd_rx: None,
+            hw_event_tx: Some(hw_event_tx),
+            device_input_rx,
+            device_input_tx: device_input_tx_internal,
+        };
+
+        let event = ButtonEvent {
+            index: 3,
+            pressed: false,
+            state: 0,
+        };
+
+        daemon.handle_device_event("test_device", event).await;
+
+        let received = hw_event_rx.recv().await.unwrap();
+        match received {
+            HardwareEvent::KeyUp { device_id, key_index } => {
+                assert_eq!(device_id, "test_device");
+                assert_eq!(key_index, 3);
+            }
+            _ => panic!("Expected KeyUp event"),
         }
     }
 }
