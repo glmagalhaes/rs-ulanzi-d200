@@ -28,3 +28,20 @@
 2. The pipeline makes the resulting binaries available as build artifacts so testers can download them directly.
 3. The pipeline runs effectively on GitLab's shared/hosted runners.
 4. The pipeline is triggered on the tag `beta-release`.
+
+## User Story 11: Cross-Compile Windows Binary in Linux Container
+
+**As a** developer,
+**I want** to update the `.gitlab-ci.yml` pipeline to cross-compile the Windows binary using a Linux container with `cargo-xwin`
+**So that** we can reliably build the Windows runtime without relying on GitLab's shared Windows runners, utilizing the proven local containerized approach.
+
+**Acceptance Criteria:**
+
+1.  The `.gitlab-ci.yml` file includes a job to build for the `x86_64-pc-windows-msvc` target.
+2.  The job uses a Linux-based image (like the `rust:latest` or similar, mirroring the `Containerfile` dependencies).
+3.  The job installs required system dependencies (`lld`, `clang`, `llvm`).
+4.  The job adds the `x86_64-pc-windows-msvc` rust target.
+5.  The job installs `cargo-xwin`.
+6.  The job builds the release artifact using `cargo xwin build --release --target x86_64-pc-windows-msvc`.
+7.  The built executable is exposed as a CI artifact.
+8.  The previous native Windows job (commented out) is removed or replaced by this new job.

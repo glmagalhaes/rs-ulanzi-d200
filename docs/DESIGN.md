@@ -35,7 +35,7 @@ A cross-platform build pipeline is configured via GitLab CI (`.gitlab-ci.yml`) t
 - **Linux:** `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`
 - **macOS:** `x86_64-apple-darwin` and `aarch64-apple-darwin`
 
-The pipeline leverages GitLab's native shared runners (Windows, Linux, macOS) to perform reliable compilation. 
+The pipeline leverages GitLab's native shared runners (Linux, macOS) and containerized cross-compilation on Linux (using `cargo-xwin` for Windows binaries) to perform reliable compilation. 
 
 **Trigger:**
 The build and release process is triggered by pushing a git tag that matches the `beta-release*` pattern. 
