@@ -161,7 +161,29 @@ impl UlanziDaemon {
                         std::future::pending::<Option<BridgeEvent>>().await
                     }
                 } => {
-                    self.handle_plugin_command(cmd).await;
+                    let mut needs_flush = self.handle_plugin_command(cmd).await;
+                    loop {
+                        let next_cmd_opt = if let Some(rx) = &mut self.plugin_cmd_rx {
+                            rx.try_recv().ok()
+                        } else {
+                            None
+                        };
+                        match next_cmd_opt {
+                            Some(c) => {
+                                if self.handle_plugin_command(c).await {
+                                    needs_flush = true;
+                                }
+                            }
+                            None => break,
+                        }
+                    }
+                    if needs_flush {
+                        for dev in self.devices.values() {
+                            if let Err(e) = dev.flush().await {
+                                error!("Failed to flush device {}: {}", dev.get_id(), e);
+                            }
+                        }
+                    }
                 }
 
                 _ = keep_alive_interval.tick() => {
@@ -225,7 +247,8 @@ impl UlanziDaemon {
         // Local actions removed - entirely handled by OpenAction/OpenDeck
     }
 
-    async fn handle_plugin_command(&mut self, cmd: BridgeEvent) {
+    async fn handle_plugin_command(&mut self, cmd: BridgeEvent) -> bool {
+        let mut dirty = false;
         match cmd {
             BridgeEvent::SetImage {
                 device_id,
@@ -244,9 +267,7 @@ impl UlanziDaemon {
                     if let Err(e) = dev.set_button_image(index, &image_base64).await {
                         error!("Failed to set image: {}", e);
                     } else {
-                        if let Err(e) = dev.flush().await {
-                            error!("Failed to flush device {}: {}", dev.get_id(), e);
-                        }
+                        dirty = true;
                     }
                 } else {
                     warn!("SetImage: No target device found for {}", device_id);
@@ -266,9 +287,7 @@ impl UlanziDaemon {
                     let index = position as usize;
                     debug!("Clearing image for button {} on {}", index, dev.get_id());
                     dev.clear_button_image(index);
-                    if let Err(e) = dev.flush().await {
-                        error!("Failed to flush device {}: {}", dev.get_id(), e);
-                    }
+                    dirty = true;
                 } else {
                     warn!("ClearImage: No target device found for {}", device_id);
                 }
@@ -298,6 +317,7 @@ impl UlanziDaemon {
                 // Info only
             }
         }
+        dirty
     }
 }
 
