@@ -16,8 +16,6 @@ The driver uses a dedicated I/O thread to manage the device, communicating with 
 
 ## Usage
 
-There is a [configuration guide](CONFIGURATION_GUIDE.md) with additional details.
-
 Add this to your `Cargo.toml`:
 
 ```toml
