@@ -82,7 +82,7 @@ async fn main() -> Result<()> {
     };
 
     // 2. Determine Communication Mode
-    let (plugin_cmd_rx, hw_event_tx) = if let Some(ref uuid) = args.plugin_uuid {
+    let (plugin_cmd_rx, hw_event_tx, openaction_handle) = if let Some(ref uuid) = args.plugin_uuid {
         // PLUGIN MODE (Client)
         let port = args.port;
         let event = args
@@ -93,20 +93,14 @@ async fn main() -> Result<()> {
 
         info!("Starting in Plugin Mode (UUID: {}, Port: {})", uuid, port);
 
-        // Channel for commands from Plugin (OpenAction) -> Daemon
-        // Daemon expects BridgeEvent
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(100);
-
-        // Channel for events from Daemon -> Plugin (OpenAction)
         let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(100);
 
-        // 1. Setup OpenAction Bridge (Global Handler)
         let bridge = crate::openaction_client::OpenActionBridge::new(cmd_tx);
         bridge.register();
 
-        // 2. Prepare OpenAction Args
         let oa_args = vec![
-            "rs-ulanzi-d200-linux".to_string(), // Program name
+            "rs-ulanzi-d200-linux".to_string(),
             "-port".to_string(),
             port.to_string(),
             "-pluginUUID".to_string(),
@@ -117,15 +111,16 @@ async fn main() -> Result<()> {
             info_str,
         ];
 
-        // 3. Spawn OpenAction Runtime
-        tokio::spawn(async move {
+        // Keep handle so we can detect when OpenDeck disconnects
+        let oa_handle = tokio::spawn(async move {
             info!("Running OpenAction Runtime...");
             if let Err(e) = openaction::run(oa_args).await {
                 error!("OpenAction Runtime Error: {}", e);
             }
+            info!("OpenAction Runtime exited");
         });
 
-        // 4. Handle Outbound Events (Daemon -> OpenAction Device Plugin)
+        // Outbound events forwarder (unchanged)
         tokio::spawn(async move {
             while let Some(event) = event_rx.recv().await {
                 match event {
@@ -142,8 +137,6 @@ async fn main() -> Result<()> {
                         let _ = openaction::device_plugin::key_up(device_id, key_index).await;
                     }
                     daemon::HardwareEvent::DeviceConnected { device_id } => {
-                        // Register device with OpenAction
-                        // name: "Ulanzi D200", rows: 3, cols: 5, type: 0 (Standard), encoder_count: 0
                         let _ = openaction::device_plugin::register_device(
                             device_id,
                             "Ulanzi D200".to_string(),
@@ -158,29 +151,41 @@ async fn main() -> Result<()> {
             }
         });
 
-        (Some(cmd_rx), Some(event_tx))
+        (Some(cmd_rx), Some(event_tx), Some(oa_handle))
     } else if args.daemon && args.websocket {
-        // SERVER MODE - Currently disabled due to type mismatch with new Daemon
         warn!("Server Mode is currently disabled/unsupported in this version.");
-        (None, None)
+        (None, None, None)
     } else {
-        (None, None)
+        (None, None, None)
     };
 
     // 3. Start Daemon or One-Shot
     if args.daemon || args.plugin_uuid.is_some() {
         let daemon = daemon::UlanziDaemon::new(config, plugin_cmd_rx, hw_event_tx).await?;
-        daemon.run().await?;
+
+        if let Some(oa_handle) = openaction_handle {
+            // Plugin mode: exit when EITHER the daemon or the OpenAction runtime finishes
+            tokio::select! {
+                res = daemon.run() => {
+                    info!("Daemon exited");
+                    res?;
+                }
+                _ = oa_handle => {
+                    info!("OpenAction runtime ended; shutting down driver");
+                }
+            }
+        } else {
+            // Standalone daemon mode: just run until daemon exits (Ctrl-C, etc)
+            daemon.run().await?;
+        }
     } else {
-        // Run once for initialization
+        // One-shot mode (unchanged)
         let mut device = device::UlanziDevice::connect().await?;
         info!("Initializing device state...");
-
         device.set_brightness(config.brightness).await?;
         let label_style = serde_json::to_value(&config.label_style)?;
         device.set_label_style(&label_style).await?;
         device.set_buttons(&config).await?;
-
         info!("Initialization complete.");
     }
 
