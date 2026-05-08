@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_hid::{AsyncHidWrite, DeviceReader, DeviceWriter, HidBackend};
 use byteorder::{BigEndian, LittleEndian, WriteBytesExt};
 use data_url::DataUrl;
@@ -164,12 +164,12 @@ impl UlanziDevice {
         let img = image::load_from_memory(&body)?;
 
         // 3. Resize/Process
-        let resized = img.resize_exact(72, 72, image::imageops::FilterType::Lanczos3);
+        let resized = img.resize_exact(196, 196, image::imageops::FilterType::Lanczos3);
 
         // 4. Convert to JPEG
         let mut jpeg_data = Vec::new();
         let mut cursor = Cursor::new(&mut jpeg_data);
-        resized.write_to(&mut cursor, image::ImageFormat::Jpeg)?;
+        resized.write_to(&mut cursor, image::ImageFormat::Png)?;
 
         // 5. Store in internal buffer
         self.button_images.insert(index, jpeg_data);
@@ -182,30 +182,33 @@ impl UlanziDevice {
     }
 
     pub async fn flush(&self) -> Result<()> {
-        let mut dummy_retries = 0;
-        let mut dummy_str = String::new();
-
-        let zip_data = loop {
+        let zip_data = {
             let mut buf = Vec::new();
             {
                 let mut zip = zip::ZipWriter::new(Cursor::new(&mut buf));
-                let options: FileOptions<()> =
+                // Use STORED (no compression) for dummy/sentinel, Deflated for content
+                let stored: FileOptions<()> =
+                    FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+                let deflated: FileOptions<()> =
                     FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
-                let mut manifest = json!({});
+                // 1. dummy.txt FIRST - shifts subsequent file offsets away from
+                //    bad 1024-byte boundaries when retried
+                zip.start_file("dummy.txt", stored)?;
+                zip.write_all(b"")?;
 
+                // 2. Icons
+                let mut manifest = json!({});
                 for i in 0..15 {
                     let col = i % 5;
                     let row = i / 5;
                     let key = format!("{}_{}", col, row);
 
-                    let mut view_param = json!({
-                        "Text": "",
-                    });
+                    let mut view_param = json!({ "Text": "" });
 
                     if let Some(img_data) = self.button_images.get(&i) {
-                        let icon_name = format!("{}.jpg", i);
-                        zip.start_file(format!("icons/{}", icon_name), options)?;
+                        let icon_name = format!("{}.png", i);
+                        zip.start_file(format!("icons/{}", icon_name), deflated)?;
                         zip.write_all(img_data)?;
                         view_param["Icon"] = json!(format!("icons/{}", icon_name));
                     }
@@ -216,38 +219,18 @@ impl UlanziDevice {
                     });
                 }
 
-                zip.start_file("manifest.json", options)?;
+                // 3. manifest.json
+                zip.start_file("manifest.json", deflated)?;
                 zip.write_all(serde_json::to_string(&manifest)?.as_bytes())?;
 
-                if dummy_retries > 0 {
-                    let mut rng = rand::rng();
-                    for _ in 0..8 * dummy_retries {
-                        dummy_str.push(rng.random_range(b'a'..=b'z') as char);
-                    }
-                }
-                zip.start_file("dummy.txt", options)?;
-                zip.write_all(dummy_str.as_bytes())?;
+                // 4. sentinel.txt LAST - the firmware parser drops the final
+                //    archive entry, so this absorbs that loss
+                zip.start_file("sentinel.txt", stored)?;
+                zip.write_all(b"")?;
 
                 zip.finish()?;
             }
-
-            let mut valid = true;
-            for i in (1016..buf.len()).step_by(1024) {
-                if buf[i] == 0x00 || buf[i] == 0x7c {
-                    valid = false;
-                    break;
-                }
-            }
-
-            if valid {
-                break buf;
-            }
-
-            dummy_retries += 1;
-            debug!(
-                "Protocol bug detected, regenerating ZIP (retry {})",
-                dummy_retries
-            );
+            buf
         };
 
         self.send_file(&zip_data).await?;
@@ -264,11 +247,10 @@ impl UlanziDevice {
                 let path = Path::new(img_path);
                 if path.exists() {
                     if let Ok(img) = image::open(path) {
-                        let resized =
-                            img.resize_exact(72, 72, image::imageops::FilterType::Lanczos3);
+                        let resized = img.resize_exact(196, 196, image::imageops::FilterType::Lanczos3);
                         let mut jpeg_data = Vec::new();
                         let mut cursor = Cursor::new(&mut jpeg_data);
-                        resized.write_to(&mut cursor, image::ImageFormat::Jpeg)?;
+                        resized.write_to(&mut cursor, image::ImageFormat::Png)?;
                         self.button_images.insert(button.index, jpeg_data);
                     }
                 }
