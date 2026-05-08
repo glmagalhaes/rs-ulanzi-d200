@@ -247,7 +247,8 @@ impl UlanziDevice {
                 let path = Path::new(img_path);
                 if path.exists() {
                     if let Ok(img) = image::open(path) {
-                        let resized = img.resize_exact(196, 196, image::imageops::FilterType::Lanczos3);
+                        let resized =
+                            img.resize_exact(196, 196, image::imageops::FilterType::Lanczos3);
                         let mut jpeg_data = Vec::new();
                         let mut cursor = Cursor::new(&mut jpeg_data);
                         resized.write_to(&mut cursor, image::ImageFormat::Png)?;
@@ -280,11 +281,10 @@ impl UlanziDevice {
         };
         let first_packet =
             self.build_packet(CommandProtocol::OutSetButtons, first_chunk_data, file_size);
-        self.writer
-            .lock()
-            .await
-            .write_output_report(&first_packet)
-            .await?;
+
+        // Lock writer for the entire duration of the file transfer
+        let mut writer = self.writer.lock().await;
+        writer.write_output_report(&first_packet).await?;
 
         // Remaining chunks
         if data.len() > 1016 {
@@ -292,11 +292,7 @@ impl UlanziDevice {
                 let mut packet = [0u8; 1024];
                 let len = chunk.len().min(1024);
                 packet[..len].copy_from_slice(&chunk[..len]);
-                self.writer
-                    .lock()
-                    .await
-                    .write_output_report(&packet)
-                    .await?;
+                writer.write_output_report(&packet).await?;
             }
         }
 
