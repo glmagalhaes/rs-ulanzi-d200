@@ -203,7 +203,8 @@ impl UlanziDevice {
 
             // 2. Icons (using snapshot, not live map)
             let mut manifest = json!({});
-            for i in 0..15 {
+
+            for i in 0..14 {
                 let col = i % 5;
                 let row = i / 5;
                 let key = format!("{}_{}", col, row);
@@ -214,6 +215,9 @@ impl UlanziDevice {
                     zip.start_file(format!("icons/{}", icon_name), deflated)?;
                     zip.write_all(img_data)?;
                     view_param["Icon"] = json!(format!("icons/{}", icon_name));
+                } else {
+                    // Explicitly clear the icon for buttons without an image
+                    view_param["Icon"] = json!("");
                 }
 
                 manifest[key] = json!({ "State": 0, "ViewParam": [view_param] });
@@ -240,7 +244,6 @@ impl UlanziDevice {
         );
         Ok(())
     }
-
     pub async fn set_buttons(&self, config: &crate::config::Config) -> Result<()> {
         let mut new_images = HashMap::new();
         for button in &config.buttons {
