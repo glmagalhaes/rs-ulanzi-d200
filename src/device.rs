@@ -4,7 +4,6 @@ use byteorder::{BigEndian, LittleEndian, WriteBytesExt};
 use data_url::DataUrl;
 use futures_util::StreamExt;
 use log::{debug, info};
-use rand::RngExt;
 use serde_json::json;
 use std::collections::HashMap;
 use std::io::{Cursor, Write};
