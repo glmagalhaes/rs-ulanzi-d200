@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use async_hid::{AsyncHidWrite, DeviceReader, DeviceWriter, HidBackend};
 use byteorder::{BigEndian, LittleEndian, WriteBytesExt};
 use data_url::DataUrl;
@@ -9,8 +9,9 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::io::{Cursor, Write};
 use std::path::Path;
+use std::sync::Mutex;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::Mutex as TokioMutex;
 use zip::write::FileOptions;
 
 pub const VENDOR_ID: u16 = 0x2207;
@@ -36,10 +37,10 @@ pub struct ButtonEvent {
 }
 
 pub struct UlanziDevice {
-    writer: Arc<Mutex<DeviceWriter>>,
+    writer: Arc<TokioMutex<DeviceWriter>>,
     reader: Option<DeviceReader>,
     id: String,
-    button_images: HashMap<usize, Vec<u8>>,
+    button_images: Mutex<HashMap<usize, Vec<u8>>>,
 }
 
 impl UlanziDevice {
@@ -71,10 +72,10 @@ impl UlanziDevice {
         info!("Connected to Ulanzi D200 (ID: {})", id);
 
         Ok(Self {
-            writer: Arc::new(Mutex::new(writer)),
+            writer: Arc::new(TokioMutex::new(writer)),
             reader: Some(reader),
             id,
-            button_images: HashMap::new(),
+            button_images: Mutex::new(HashMap::new()),
         })
     }
 
@@ -93,7 +94,6 @@ impl UlanziDevice {
     pub fn take_reader(&mut self) -> Option<DeviceReader> {
         self.reader.take()
     }
-    // ...
 
     pub fn parse_report(buf: &[u8]) -> Option<ButtonEvent> {
         if buf.len() < 12 {
@@ -153,7 +153,7 @@ impl UlanziDevice {
         Ok(())
     }
 
-    pub async fn set_button_image(&mut self, index: usize, image_data: &str) -> Result<()> {
+    pub async fn set_button_image(&self, index: usize, image_data: &str) -> Result<()> {
         // 1. Parse Data URL
         let url = DataUrl::process(image_data).map_err(|_| anyhow!("Invalid data URL"))?;
         let (body, _) = url
@@ -163,85 +163,88 @@ impl UlanziDevice {
         // 2. Load image using image crate
         let img = image::load_from_memory(&body)?;
 
-        // 3. Resize/Process
+        // 3. Resize to 196x196 (device expects this resolution)
         let resized = img.resize_exact(196, 196, image::imageops::FilterType::Lanczos3);
 
-        // 4. Convert to JPEG
-        let mut jpeg_data = Vec::new();
-        let mut cursor = Cursor::new(&mut jpeg_data);
+        // 4. Encode as PNG (lossless, device supports it)
+        let mut png_data = Vec::new();
+        let mut cursor = Cursor::new(&mut png_data);
         resized.write_to(&mut cursor, image::ImageFormat::Png)?;
 
-        // 5. Store in internal buffer
-        self.button_images.insert(index, jpeg_data);
-
+        // 5. Store in internal buffer (locked briefly)
+        let mut map = self.button_images.lock().unwrap();
+        map.insert(index, png_data);
         Ok(())
     }
 
-    pub fn clear_button_image(&mut self, index: usize) {
-        self.button_images.remove(&index);
+    pub fn clear_button_image(&self, index: usize) {
+        let mut map = self.button_images.lock().unwrap();
+        map.remove(&index);
     }
 
     pub async fn flush(&self) -> Result<()> {
-        let zip_data = {
-            let mut buf = Vec::new();
-            {
-                let mut zip = zip::ZipWriter::new(Cursor::new(&mut buf));
-                // Use STORED (no compression) for dummy/sentinel, Deflated for content
-                let stored: FileOptions<()> =
-                    FileOptions::default().compression_method(zip::CompressionMethod::Stored);
-                let deflated: FileOptions<()> =
-                    FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-
-                // 1. dummy.txt FIRST - shifts subsequent file offsets away from
-                //    bad 1024-byte boundaries when retried
-                zip.start_file("dummy.txt", stored)?;
-                zip.write_all(b"")?;
-
-                // 2. Icons
-                let mut manifest = json!({});
-                for i in 0..15 {
-                    let col = i % 5;
-                    let row = i / 5;
-                    let key = format!("{}_{}", col, row);
-
-                    let mut view_param = json!({ "Text": "" });
-
-                    if let Some(img_data) = self.button_images.get(&i) {
-                        let icon_name = format!("{}.png", i);
-                        zip.start_file(format!("icons/{}", icon_name), deflated)?;
-                        zip.write_all(img_data)?;
-                        view_param["Icon"] = json!(format!("icons/{}", icon_name));
-                    }
-
-                    manifest[key] = json!({
-                        "State": 0,
-                        "ViewParam": [view_param]
-                    });
-                }
-
-                // 3. manifest.json
-                zip.start_file("manifest.json", deflated)?;
-                zip.write_all(serde_json::to_string(&manifest)?.as_bytes())?;
-
-                // 4. sentinel.txt LAST - the firmware parser drops the final
-                //    archive entry, so this absorbs that loss
-                zip.start_file("sentinel.txt", stored)?;
-                zip.write_all(b"")?;
-
-                zip.finish()?;
-            }
-            buf
+        // --- Race fix: snapshot the button images ---
+        let images_snapshot = {
+            let map = self.button_images.lock().unwrap();
+            map.clone()
         };
 
-        self.send_file(&zip_data).await?;
+        // --- Build ZIP using upstream's proven layout (no retry loop) ---
+        let mut buf = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(Cursor::new(&mut buf));
+            let stored: FileOptions<()> =
+                FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            let deflated: FileOptions<()> =
+                FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+
+            // 1. dummy.txt FIRST – shifts offsets away from bad 1024-byte boundaries
+            zip.start_file("dummy.txt", stored)?;
+            zip.write_all(b"")?; // empty is fine; presence matters
+
+            // 2. Icons (using snapshot, not live map)
+            let mut manifest = json!({});
+            for i in 0..15 {
+                let col = i % 5;
+                let row = i / 5;
+                let key = format!("{}_{}", col, row);
+                let mut view_param = json!({ "Text": "" });
+
+                if let Some(img_data) = images_snapshot.get(&i) {
+                    let icon_name = format!("{}.png", i);
+                    zip.start_file(format!("icons/{}", icon_name), deflated)?;
+                    zip.write_all(img_data)?;
+                    view_param["Icon"] = json!(format!("icons/{}", icon_name));
+                }
+
+                manifest[key] = json!({ "State": 0, "ViewParam": [view_param] });
+            }
+
+            // 3. manifest.json
+            zip.start_file("manifest.json", deflated)?;
+            zip.write_all(serde_json::to_string(&manifest)?.as_bytes())?;
+
+            // 4. sentinel.txt LAST – absorbs the firmware’s final‑entry drop
+            zip.start_file("sentinel.txt", stored)?;
+            zip.write_all(b"")?;
+
+            zip.finish()?;
+        }
+
+        // Optional: small delay before sending (helps some devices)
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        self.send_file(&buf).await?;
         info!(
             "Successfully sent button configuration ({} bytes)",
-            zip_data.len()
+            buf.len()
         );
         Ok(())
     }
 
-    pub async fn set_buttons(&mut self, config: &crate::config::Config) -> Result<()> {
+    pub async fn set_buttons(&self, config: &crate::config::Config) -> Result<()> {
+        let mut new_images = HashMap::new();
+
         for button in &config.buttons {
             if let Some(ref img_path) = button.image {
                 let path = Path::new(img_path);
@@ -249,14 +252,23 @@ impl UlanziDevice {
                     if let Ok(img) = image::open(path) {
                         let resized =
                             img.resize_exact(196, 196, image::imageops::FilterType::Lanczos3);
-                        let mut jpeg_data = Vec::new();
-                        let mut cursor = Cursor::new(&mut jpeg_data);
+                        let mut png_data = Vec::new();
+                        let mut cursor = Cursor::new(&mut png_data);
                         resized.write_to(&mut cursor, image::ImageFormat::Png)?;
-                        self.button_images.insert(button.index, jpeg_data);
+                        new_images.insert(button.index, png_data);
                     }
                 }
             }
         }
+
+        // Atomically apply all new images
+        {
+            let mut map = self.button_images.lock().unwrap();
+            for (idx, data) in new_images {
+                map.insert(idx, data);
+            }
+        }
+
         self.flush().await
     }
 
@@ -282,7 +294,7 @@ impl UlanziDevice {
         let first_packet =
             self.build_packet(CommandProtocol::OutSetButtons, first_chunk_data, file_size);
 
-        // Lock writer for the entire duration of the file transfer
+        // Lock writer once for the entire file transfer
         let mut writer = self.writer.lock().await;
         writer.write_output_report(&first_packet).await?;
 
