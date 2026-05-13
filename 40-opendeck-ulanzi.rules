@@ -18,3 +18,4 @@
 # refer to the hidapi documentation.
 
 SUBSYSTEM=="usb", ATTRS{idVendor}=="2207", ATTRS{idProduct}=="0019", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="2207", ATTRS{idProduct}=="0019", TAG+="uaccess", MODE="0660"
