@@ -179,8 +179,7 @@ async fn main() -> Result<()> {
             daemon.run().await?;
         }
     } else {
-        // One-shot mode (unchanged)
-        let mut device = device::UlanziDevice::connect().await?;
+        let device = device::UlanziDevice::connect().await?;
         info!("Initializing device state...");
         device.set_brightness(config.brightness).await?;
         let label_style = serde_json::to_value(&config.label_style)?;
