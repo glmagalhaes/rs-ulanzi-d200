@@ -243,14 +243,12 @@ impl UlanziDevice {
 
     pub async fn set_buttons(&self, config: &crate::config::Config) -> Result<()> {
         let mut new_images = HashMap::new();
-
         for button in &config.buttons {
             if let Some(ref img_path) = button.image {
                 let path = Path::new(img_path);
                 if path.exists() {
                     if let Ok(img) = image::open(path) {
-                        let resized =
-                            img.resize_exact(196, 196, image::imageops::FilterType::Lanczos3);
+                        let resized = img.resize_exact(196, 196, image::imageops::FilterType::Lanczos3);
                         let mut png_data = Vec::new();
                         let mut cursor = Cursor::new(&mut png_data);
                         resized.write_to(&mut cursor, image::ImageFormat::Png)?;
@@ -260,12 +258,10 @@ impl UlanziDevice {
             }
         }
 
-        // Atomically apply all new images
+        // Replace the entire map
         {
             let mut map = self.button_images.lock().unwrap();
-            for (idx, data) in new_images {
-                map.insert(idx, data);
-            }
+            *map = new_images;
         }
 
         self.flush().await
