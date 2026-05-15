@@ -85,6 +85,7 @@ impl UlanziDaemon {
                     e
                 );
             }
+            let _ = device.set_small_window_data(self.config.display_mode, 0, 0, "", 0).await;
 
             // Notify plugins about this device
             if let Some(ref tx) = self.hw_event_tx {
