@@ -1,3 +1,8 @@
+use std::collections::HashMap;
+use std::io::{Cursor, Write};
+use std::path::Path;
+use std::sync::{Arc, Mutex};
+
 use anyhow::{anyhow, Result};
 use async_hid::{AsyncHidWrite, DeviceReader, DeviceWriter, HidBackend};
 use byteorder::{BigEndian, LittleEndian, WriteBytesExt};
@@ -5,17 +10,24 @@ use data_url::DataUrl;
 use futures_util::StreamExt;
 use log::{debug, info};
 use serde_json::json;
-use std::collections::HashMap;
-use std::io::{Cursor, Write};
-use std::path::Path;
-use std::sync::Mutex;
-use std::sync::Arc;
 use tokio::sync::Mutex as TokioMutex;
 use zip::write::FileOptions;
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
 
 pub const VENDOR_ID: u16 = 0x2207;
 pub const PRODUCT_ID: u16 = 0x0019;
 pub const DEVICE_NAMESPACE: &str = "e9";
+
+const PACKET_SIZE: usize = 1024;
+const HEADER: [u8; 2] = [0x7c, 0x7c];
+const USAGE_PAGE: u16 = 0x000c;
+
+// ---------------------------------------------------------------------------
+// Command protocol (device‑specific)
+// ---------------------------------------------------------------------------
 
 #[repr(u16)]
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -28,6 +40,10 @@ pub enum CommandProtocol {
     InButton2 = 0x0102,
 }
 
+// ---------------------------------------------------------------------------
+// Event from physical button
+// ---------------------------------------------------------------------------
+
 #[derive(Debug, Clone, Copy)]
 pub struct ButtonEvent {
     pub index: usize,
@@ -35,19 +51,23 @@ pub struct ButtonEvent {
     pub state: u8,
 }
 
+// ---------------------------------------------------------------------------
+// Device handle
+// ---------------------------------------------------------------------------
+
+/// A connection to an Ulanzi D200 macro‑pad.
 pub struct UlanziDevice {
     writer: Arc<TokioMutex<DeviceWriter>>,
     reader: Option<DeviceReader>,
     id: String,
+    /// PNG images for each button index (stored until `flush()`).
     button_images: Mutex<HashMap<usize, Vec<u8>>>,
 }
 
 impl UlanziDevice {
-    const PACKET_SIZE: usize = 1024;
-    const HEADER: [u8; 2] = [0x7c, 0x7c];
-    const USAGE_PAGE: u16 = 0x000c;
+    // -- Construction -------------------------------------------------------
 
-    /// Connects to the first available Ulanzi D200 device.
+    /// Connect to the first Ulanzi D200 found on the USB bus.
     pub async fn connect() -> Result<Self> {
         let backend = HidBackend::default();
         let devices: Vec<_> = backend.enumerate().await?.collect().await;
@@ -57,7 +77,7 @@ impl UlanziDevice {
             .find(|d| {
                 d.vendor_id == VENDOR_ID
                     && d.product_id == PRODUCT_ID
-                    && d.usage_page == Self::USAGE_PAGE
+                    && d.usage_page == USAGE_PAGE
             })
             .ok_or_else(|| anyhow!("Ulanzi D200 device not found"))?;
 
@@ -78,28 +98,29 @@ impl UlanziDevice {
         })
     }
 
-    fn generate_id(serial: Option<&str>, fallback_id: &str) -> String {
-        if let Some(s) = serial {
-            format!("{}-{}", DEVICE_NAMESPACE, s)
-        } else {
-            format!("{}-{}", DEVICE_NAMESPACE, fallback_id)
+    fn generate_id(serial: Option<&str>, fallback: &str) -> String {
+        match serial {
+            Some(s) => format!("{}-{}", DEVICE_NAMESPACE, s),
+            None => format!("{}-{}", DEVICE_NAMESPACE, fallback),
         }
     }
+
+    // -- Accessors ----------------------------------------------------------
 
     pub fn get_id(&self) -> &str {
         &self.id
     }
 
+    /// Take ownership of the HID reader (used to spawn an event loop).
     pub fn take_reader(&mut self) -> Option<DeviceReader> {
         self.reader.take()
     }
 
-    pub fn parse_report(buf: &[u8]) -> Option<ButtonEvent> {
-        if buf.len() < 12 {
-            return None;
-        }
+    // -- Report parsing (static) --------------------------------------------
 
-        if &buf[0..2] != Self::HEADER {
+    /// Parse a raw HID input report into a `ButtonEvent`, if valid.
+    pub fn parse_report(buf: &[u8]) -> Option<ButtonEvent> {
+        if buf.len() < 12 || &buf[0..2] != &HEADER {
             return None;
         }
 
@@ -110,17 +131,16 @@ impl UlanziDevice {
             return None;
         }
 
-        let state = buf[8];
-        let index = buf[9] as usize;
-        let pressed = buf[11] == 0x01;
-
         Some(ButtonEvent {
-            index,
-            pressed,
-            state,
+            state: buf[8],
+            index: buf[9] as usize,
+            pressed: buf[11] == 0x01,
         })
     }
 
+    // -- High‑level commands ------------------------------------------------
+
+    /// Update the small info window with system stats.
     pub async fn set_small_window_data(
         &self,
         mode: u8,
@@ -131,10 +151,10 @@ impl UlanziDevice {
     ) -> Result<()> {
         let payload = format!("{}|{}|{}|{}|{}", mode, cpu, mem, time_str, gpu).into_bytes();
         self.send_command(CommandProtocol::OutSetSmallWindowData, &payload)
-            .await?;
-        Ok(())
+            .await
     }
 
+    /// Set screen brightness (0‑100).
     pub async fn set_brightness(&self, brightness: u8) -> Result<()> {
         let brightness = brightness.min(100);
         let payload = brightness.to_string().into_bytes();
@@ -144,6 +164,7 @@ impl UlanziDevice {
         Ok(())
     }
 
+    /// Push a JSON style object (label colours, fonts, etc.).
     pub async fn set_label_style(&self, style: &serde_json::Value) -> Result<()> {
         let payload = serde_json::to_vec(style)?;
         self.send_command(CommandProtocol::OutSetLabelStyle, &payload)
@@ -152,35 +173,69 @@ impl UlanziDevice {
         Ok(())
     }
 
+    /// Stage a button image from a data URL.  Call `flush()` afterwards.
     pub async fn set_button_image(&self, index: usize, image_data: &str) -> Result<()> {
-        // 1. Parse Data URL
         let url = DataUrl::process(image_data).map_err(|_| anyhow!("Invalid data URL"))?;
         let (body, _) = url
             .decode_to_vec()
             .map_err(|_| anyhow!("Failed to decode data URL"))?;
 
-        // 2. Load image using image crate
         let img = image::load_from_memory(&body)?;
-
-        // 3. Resize to 196x196 (device expects this resolution)
         let resized = img.resize_exact(196, 196, image::imageops::FilterType::Lanczos3);
 
-        // 4. Encode as PNG (lossless, device supports it)
         let mut png_data = Vec::new();
-        let mut cursor = Cursor::new(&mut png_data);
-        resized.write_to(&mut cursor, image::ImageFormat::Png)?;
+        {
+            let mut cursor = Cursor::new(&mut png_data);
+            resized.write_to(&mut cursor, image::ImageFormat::Png)?;
+        }
 
-        // 5. Store in internal buffer (locked briefly)
-        let mut map = self.button_images.lock().unwrap();
-        map.insert(index, png_data);
+        self.button_images
+            .lock()
+            .unwrap()
+            .insert(index, png_data);
         Ok(())
     }
 
+    /// Remove a previously staged button image.
     pub fn clear_button_image(&self, index: usize) {
-        let mut map = self.button_images.lock().unwrap();
-        map.remove(&index);
+        self.button_images.lock().unwrap().remove(&index);
     }
 
+    /// Replace **all** button images from a configuration, then send to
+    /// device immediately.
+    pub async fn set_buttons(&self, config: &crate::config::Config) -> Result<()> {
+        let mut new_images = HashMap::new();
+
+        for button in &config.buttons {
+            if let Some(ref img_path) = button.image {
+                let path = Path::new(img_path);
+                if path.exists() {
+                    if let Ok(img) = image::open(path) {
+                        let resized = img.resize_exact(
+                            196,
+                            196,
+                            image::imageops::FilterType::Lanczos3,
+                        );
+                        let mut png_data = Vec::new();
+                        {
+                            let mut cursor = Cursor::new(&mut png_data);
+                            resized.write_to(&mut cursor, image::ImageFormat::Png)?;
+                        }
+                        new_images.insert(button.index, png_data);
+                    }
+                }
+            }
+        }
+
+        *self.button_images.lock().unwrap() = new_images;
+        self.flush().await
+    }
+
+    /// Send the currently staged button images to the device.
+    ///
+    /// **IMPORTANT:** The ZIP structure below is **exactly** what the D200
+    /// firmware expects.  Do **not** reorder, rename, or change the compression
+    /// of any entry – even a tiny change will blank the screen.
     pub async fn flush(&self) -> Result<()> {
         // --- Race fix: snapshot the button images ---
         let images_snapshot = {
@@ -244,63 +299,35 @@ impl UlanziDevice {
         );
         Ok(())
     }
-    pub async fn set_buttons(&self, config: &crate::config::Config) -> Result<()> {
-        let mut new_images = HashMap::new();
-        for button in &config.buttons {
-            if let Some(ref img_path) = button.image {
-                let path = Path::new(img_path);
-                if path.exists() {
-                    if let Ok(img) = image::open(path) {
-                        let resized = img.resize_exact(196, 196, image::imageops::FilterType::Lanczos3);
-                        let mut png_data = Vec::new();
-                        let mut cursor = Cursor::new(&mut png_data);
-                        resized.write_to(&mut cursor, image::ImageFormat::Png)?;
-                        new_images.insert(button.index, png_data);
-                    }
-                }
-            }
-        }
 
-        // Replace the entire map
-        {
-            let mut map = self.button_images.lock().unwrap();
-            *map = new_images;
-        }
-
-        self.flush().await
-    }
+    // -- Low‑level packet I/O -----------------------------------------------
 
     async fn send_command(&self, command: CommandProtocol, payload: &[u8]) -> Result<()> {
         let packet = self.build_packet(command, payload, payload.len() as u32);
-        self.writer
-            .lock()
-            .await
-            .write_output_report(&packet)
-            .await?;
+        self.writer.lock().await.write_output_report(&packet).await?;
         Ok(())
     }
 
     async fn send_file(&self, data: &[u8]) -> Result<()> {
         let file_size = data.len() as u32;
 
-        // First chunk
-        let first_chunk_data = if data.len() >= 1016 {
-            &data[0..1016]
+        // First chunk (max 1016 bytes payload + 8 byte header)
+        let first_chunk = if data.len() >= 1016 {
+            &data[..1016]
         } else {
             data
         };
         let first_packet =
-            self.build_packet(CommandProtocol::OutSetButtons, first_chunk_data, file_size);
+            self.build_packet(CommandProtocol::OutSetButtons, first_chunk, file_size);
 
-        // Lock writer once for the entire file transfer
         let mut writer = self.writer.lock().await;
         writer.write_output_report(&first_packet).await?;
 
-        // Remaining chunks
+        // Remaining raw 1024‑byte chunks
         if data.len() > 1016 {
             for chunk in data[1016..].chunks(1024) {
-                let mut packet = [0u8; 1024];
-                let len = chunk.len().min(1024);
+                let mut packet = [0u8; PACKET_SIZE];
+                let len = chunk.len().min(PACKET_SIZE);
                 packet[..len].copy_from_slice(&chunk[..len]);
                 writer.write_output_report(&packet).await?;
             }
@@ -310,37 +337,41 @@ impl UlanziDevice {
     }
 
     fn build_packet(&self, command: CommandProtocol, data: &[u8], total_length: u32) -> Vec<u8> {
-        let mut packet = Vec::with_capacity(Self::PACKET_SIZE);
+        let mut packet = Vec::with_capacity(PACKET_SIZE);
 
-        // Header (2 bytes)
-        packet.extend_from_slice(&Self::HEADER);
+        // header
+        packet.extend_from_slice(&HEADER);
 
-        // Command (2 bytes, Big Endian)
+        // command (big‑endian)
         let mut cmd_buf = [0u8; 2];
         (&mut cmd_buf[..])
             .write_u16::<BigEndian>(command as u16)
             .unwrap();
         packet.extend_from_slice(&cmd_buf);
 
-        // Total Length (4 bytes, Little Endian)
+        // total length (little‑endian)
         let mut len_buf = [0u8; 4];
         (&mut len_buf[..])
             .write_u32::<LittleEndian>(total_length)
             .unwrap();
         packet.extend_from_slice(&len_buf);
 
-        // Payload
-        let data_len = data.len().min(Self::PACKET_SIZE - 8);
+        // payload
+        let data_len = data.len().min(PACKET_SIZE - 8);
         packet.extend_from_slice(&data[..data_len]);
 
-        // Padding
-        if packet.len() < Self::PACKET_SIZE {
-            packet.resize(Self::PACKET_SIZE, 0);
+        // pad to full packet size
+        if packet.len() < PACKET_SIZE {
+            packet.resize(PACKET_SIZE, 0);
         }
 
         packet
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -348,17 +379,13 @@ mod tests {
 
     #[test]
     fn test_generate_id_with_serial() {
-        let serial = Some("1234567890");
-        let fallback = "fallback_id";
-        let id = UlanziDevice::generate_id(serial, fallback);
+        let id = UlanziDevice::generate_id(Some("1234567890"), "fallback");
         assert_eq!(id, "e9-1234567890");
     }
 
     #[test]
     fn test_generate_id_without_serial() {
-        let serial = None;
-        let fallback = "fallback_id";
-        let id = UlanziDevice::generate_id(serial, fallback);
-        assert_eq!(id, "e9-fallback_id");
+        let id = UlanziDevice::generate_id(None, "fallback");
+        assert_eq!(id, "e9-fallback");
     }
 }
