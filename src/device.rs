@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::io::{Cursor, Write};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{anyhow, Result};
 use async_hid::{AsyncHidWrite, DeviceReader, DeviceWriter, HidBackend};
@@ -29,6 +31,7 @@ pub const NUM_BUTTONS: usize = 14;
 
 const MAX_COMMAND_PAYLOAD: usize = PACKET_SIZE - 8; // 1016
 
+static FLUSH_COUNTER: AtomicU64 = AtomicU64::new(0);
 // ---------------------------------------------------------------------------
 // Command protocol
 // ---------------------------------------------------------------------------
@@ -327,67 +330,120 @@ impl UlanziDevice {
     }
 
     /// Send the currently staged button images to the device.
-    /// The staged images are **not** cleared; they remain in the map.
+    /// Retries with a growing dummy file to avoid known hardware bug
+    /// (invalid bytes at specific offsets 1016, 1016+1024, ...).
     pub async fn flush(&self) -> Result<()> {
-        info!("Clearing and creating new icon data!");
+        info!("Building button configuration ZIP with bug workaround");
+
+        let flush_id = FLUSH_COUNTER.fetch_add(1, Ordering::Relaxed);
         let images_snapshot = {
             let map = self.button_images.lock().unwrap();
             map.clone()
         };
 
-        let mut buf = Vec::new();
-        {
-            let mut zip = zip::ZipWriter::new(Cursor::new(&mut buf));
-            let stored = FileOptions::<()>::default()
-                .compression_method(zip::CompressionMethod::Stored);
-            let deflated = FileOptions::<()>::default()
-                .compression_method(zip::CompressionMethod::Deflated);
+        const INVALID_BYTES: [u8; 2] = [0x00, 0x7c];
 
-            // 1. dummy.txt
-            zip.start_file("dummy.txt", stored)?;
-            zip.write_all(b"")?;
+        let mut dummy_retries = 0;
+        let mut zip_data = Vec::new();
 
-            // 2. Icons and manifest – always produce all 14 slots
-            let mut manifest = json!({});
+        loop {
+            zip_data.clear();
+            let mut cursor = Cursor::new(Vec::new());
+            {
+                let mut zip = zip::ZipWriter::new(&mut cursor);
+                let stored = FileOptions::<()>::default()
+                    .compression_method(zip::CompressionMethod::Stored);
+                let deflated = FileOptions::<()>::default()
+                    .compression_method(zip::CompressionMethod::Deflated);
 
-            for i in 0..NUM_BUTTONS {
-                let col = i % 5;
-                let row = i / 5;
-                let key = format!("{}_{}", col, row);
-                let mut view_param = json!({ "Text": "" });
+                // 1. dummy.txt – content grows with retries, using a simple repeating pattern
+                let dummy_content = "x".repeat(8 * dummy_retries);
+                zip.start_file("dummy.txt", stored)?;
+                zip.write_all(dummy_content.as_bytes())?;
 
-                if let Some(img_data) = images_snapshot.get(&i) {
-                    let icon_name = format!("{}.png", i);
-                    zip.start_file(format!("icons/{}", icon_name), deflated)?;
-                    zip.write_all(img_data)?;
-                    view_param["Icon"] = json!(format!("icons/{}", icon_name));
-                } else {
-                    view_param["Icon"] = json!(""); // explicit clear
+                // 2. Icons and manifest (unchanged from your original)
+                let mut manifest = json!({});
+
+                for i in 0..NUM_BUTTONS {
+                    if i == 13 {
+                        let key1 = "3_2";
+                        let key2 = "4_2";
+                        let mut view_param = json!({ "Text": "" });
+
+                        if let Some(img_data) = images_snapshot.get(&13) {
+                            let icon_name = format!("{}_{}.png", i, flush_id);
+                            zip.start_file(format!("icons/{}", icon_name), deflated)?;
+                            zip.write_all(img_data)?;
+                            view_param["Icon"] = json!(format!("icons/{}", icon_name));
+                        } else {
+                            view_param["Icon"] = json!("");
+                        }
+
+                        let entry = json!({ "State": 0, "ViewParam": [view_param] });
+                        manifest[key1] = entry.clone();
+                        manifest[key2] = entry;
+                    } else {
+                        let col = i % 5;
+                        let row = i / 5;
+                        let key = format!("{}_{}", col, row);
+                        let mut view_param = json!({ "Text": "" });
+
+                        if let Some(img_data) = images_snapshot.get(&i) {
+                            let icon_name = format!("{}_{}.png", i, flush_id);
+                            zip.start_file(format!("icons/{}", icon_name), deflated)?;
+                            zip.write_all(img_data)?;
+                            view_param["Icon"] = json!(format!("icons/{}", icon_name));
+                        } else {
+                            view_param["Icon"] = json!("");
+                        }
+
+                        manifest[key] = json!({ "State": 0, "ViewParam": [view_param] });
+                    }
                 }
 
-                manifest[key] = json!({ "State": 0, "ViewParam": [view_param] });
+                zip.start_file("manifest.json", deflated)?;
+                zip.write_all(serde_json::to_string(&manifest)?.as_bytes())?;
+
+                // 3. sentinel.txt
+                zip.start_file("sentinel.txt", stored)?;
+                zip.write_all(b"")?;
+
+                zip.finish()?;
             }
 
-            zip.start_file("manifest.json", deflated)?;
-            zip.write_all(serde_json::to_string(&manifest)?.as_bytes())?;
+            zip_data = cursor.into_inner();
 
-            // 3. sentinel.txt
-            zip.start_file("sentinel.txt", stored)?;
-            zip.write_all(b"")?;
+            // Scan for invalid bytes at offsets 1016, 1016+1024, ...
+            let file_size = zip_data.len();
+            let mut valid = true;
+            for offset in (1016..file_size).step_by(1024) {
+                if let Some(&byte) = zip_data.get(offset) {
+                    if INVALID_BYTES.contains(&byte) {
+                        debug!(
+                            "Invalid byte 0x{:02x} at offset {} (retry {})",
+                            byte, offset, dummy_retries
+                        );
+                        valid = false;
+                        break;
+                    }
+                }
+            }
 
-            zip.finish()?;
-        }
+            if valid {
+                info!("ZIP archive passed the byte‑offset check ({} retries)", dummy_retries);
+                break;
+            }
 
-        // Required delay to let the device settle before sending data
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-        self.send_file(&buf).await?;
-        info!(
-            "Successfully sent button configuration ({} bytes)",
-            buf.len()
-        );
+            dummy_retries += 1;
+       }
+
+        // Required delay before sending
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        self.send_file(&zip_data).await?;
+        info!("Successfully sent button configuration ({} bytes)", zip_data.len());
+
         Ok(())
     }
-
     // -- Low‑level packet I/O -----------------------------------------------
 
     async fn send_command(&self, command: CommandProtocol, payload: &[u8]) -> Result<()> {
