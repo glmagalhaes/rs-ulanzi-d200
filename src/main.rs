@@ -179,13 +179,30 @@ async fn main() -> Result<()> {
             daemon.run().await?;
         }
     } else {
+        // One‑shot mode: connect, clear screen, apply config, then exit
         let device = device::UlanziDevice::connect().await?;
         info!("Initializing device state...");
-        device.set_brightness(config.brightness).await?;
+
+        // 1. Clear all buttons (send empty configuration)
+        if let Err(e) = device.clear_all_images().await {
+            error!("Failed to clear buttons: {}", e);
+        }
+
+        // 2. Apply brightness and label style
+        if let Err(e) = device.set_brightness(config.brightness).await {
+            error!("Failed to set brightness: {}", e);
+        }
         let label_style = serde_json::to_value(&config.label_style)?;
-        device.set_label_style(&label_style).await?;
-        device.set_buttons(&config).await?;
-        info!("Initialization complete.");
+        if let Err(e) = device.set_label_style(&label_style).await {
+            error!("Failed to set label style: {}", e);
+        }
+
+        // 3. Send the button images defined in the config file
+        if let Err(e) = device.set_buttons(&config).await {
+            error!("Failed to set buttons: {}", e);
+        } else {
+            info!("Initialization complete.");
+        }
     }
 
     Ok(())
