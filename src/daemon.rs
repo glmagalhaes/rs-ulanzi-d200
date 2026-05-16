@@ -136,7 +136,10 @@ impl UlanziDaemon {
             }
         }
         if !initial_commands.is_empty() {
-            info!("Processing {} initial plugin commands", initial_commands.len());
+            info!(
+                "Processing {} initial plugin commands",
+                initial_commands.len()
+            );
             let mut needs_flush = false;
             for cmd in initial_commands {
                 if self.handle_plugin_command(cmd).await {
@@ -150,13 +153,16 @@ impl UlanziDaemon {
 
         // --- Timers and shutdown signal ---
         let mut keep_alive_interval = interval(Duration::from_millis(100));
-        let mut telemetry_interval = interval(Duration::from_millis(self.config.stats_interval_ms));
+        let mut telemetry_interval =
+            interval(Duration::from_millis(self.config.stats_interval_ms));
 
         let shutdown = async {
             #[cfg(unix)]
             {
-                let mut sigint = signal::unix::signal(signal::unix::SignalKind::interrupt()).unwrap();
-                let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate()).unwrap();
+                let mut sigint =
+                    signal::unix::signal(signal::unix::SignalKind::interrupt()).unwrap();
+                let mut sigterm =
+                    signal::unix::signal(signal::unix::SignalKind::terminate()).unwrap();
                 tokio::select! {
                     _ = sigint.recv() => info!("Received SIGINT, shutting down..."),
                     _ = sigterm.recv() => info!("Received SIGTERM, shutting down..."),
@@ -240,7 +246,7 @@ impl UlanziDaemon {
     }
 
     async fn handle_device_event(&mut self, device_id: &str, event: ButtonEvent) {
-        info!("Button event from {}: {:?}", device_id, event);
+        debug!("Button event from {}: {:?}", device_id, event);
         if let Some(ref tx) = self.hw_event_tx {
             let outbound = if event.pressed {
                 HardwareEvent::KeyDown {
@@ -254,7 +260,7 @@ impl UlanziDaemon {
                 }
             };
             if let Err(e) = tx.send(outbound).await {
-                info!("Failed to broadcast hardware event: {}", e);
+                warn!("Failed to broadcast hardware event: {}", e);
             }
         }
     }
@@ -267,7 +273,6 @@ impl UlanziDaemon {
                 position,
                 image_base64,
             } => {
-                info!("SetImage: device={} position={} image_len={}", device_id, position, image_base64.len());
                 let dev = if let Some(d) = self.devices.get_mut(&device_id) {
                     Some(d)
                 } else {
@@ -276,20 +281,29 @@ impl UlanziDaemon {
                 if let Some(dev) = dev {
                     let index = position as usize;
                     debug!("Setting image for button {} on {}", index, dev.get_id());
-                    if let Err(e) = dev.set_button_image(index, &image_base64).await {
-                        error!("Failed to set image: {}", e);
-                    } else {
-                        dirty = true;
+                    match dev.set_button_image(index, &image_base64).await {
+                        Ok(true) => {
+                            info!(
+                                "SetImage: device={} position={} image_len={}",
+                                dev.get_id(),
+                                index,
+                                image_base64.len()
+                            );
+                            dirty = true;
+                        }
+                        Ok(false) => {
+                            debug!("Image unchanged for button {}, skipping", index);
+                        }
+                        Err(e) => error!("Failed to set image: {}", e),
                     }
                 } else {
-                    info!("SetImage: No target device found for {}", device_id);
+                    warn!("SetImage: No target device found for {}", device_id);
                 }
             }
             BridgeEvent::ClearImage {
                 device_id,
                 position,
             } => {
-                info!("ClearImage: device={} position={}", device_id, position);
                 let dev = if let Some(d) = self.devices.get_mut(&device_id) {
                     Some(d)
                 } else {
@@ -297,11 +311,15 @@ impl UlanziDaemon {
                 };
                 if let Some(dev) = dev {
                     let index = position as usize;
-                    debug!("Clearing image for button {} on {}", index, dev.get_id());
+                    info!(
+                        "ClearImage: device={} position={}",
+                        dev.get_id(),
+                        index
+                    );
                     dev.clear_button_image(index);
                     dirty = true;
                 } else {
-                    info!("ClearImage: No target device found for {}", device_id);
+                    warn!("ClearImage: No target device found for {}", device_id);
                 }
             }
             BridgeEvent::SetBrightness {
@@ -315,10 +333,10 @@ impl UlanziDaemon {
                 };
                 if let Some(dev) = dev {
                     if let Err(e) = dev.set_brightness(brightness).await {
-                        info!("Failed to set brightness: {}", e);
+                        error!("Failed to set brightness: {}", e);
                     }
                 } else {
-                    info!("SetBrightness: No target device found for {}", device_id);
+                    warn!("SetBrightness: No target device found for {}", device_id);
                 }
             }
             BridgeEvent::DeviceConnected(_) | BridgeEvent::DeviceDisconnected(_) => {}

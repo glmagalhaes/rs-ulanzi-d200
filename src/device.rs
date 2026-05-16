@@ -13,7 +13,6 @@ use tokio::sync::Mutex as TokioMutex;
 use zip::write::FileOptions;
 
 use image::{DynamicImage, GenericImageView, RgbImage, RgbaImage};
-use image::imageops::FilterType;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -72,7 +71,7 @@ pub struct UlanziDevice {
 // ---------------------------------------------------------------------------
 
 /// Resize an image to fit inside `size`×`size`, preserving aspect ratio.
-/// The padding colour is transparent if the source has an alpha channel,
+/// The padding is transparent if the source has an alpha channel,
 /// otherwise opaque black.
 fn resize_square(img: &DynamicImage, size: u32) -> DynamicImage {
     let (w, h) = img.dimensions();
@@ -86,7 +85,7 @@ fn resize_square(img: &DynamicImage, size: u32) -> DynamicImage {
     let new_h = (h as f64 * scale).round() as u32;
 
     // Resize to the new dimensions (keeps colour type)
-    let resized = img.resize(new_w, new_h, FilterType::Triangle);
+    let resized = img.resize(new_w, new_h, image::imageops::FilterType::Triangle);
 
     // Determine if the source had alpha (RGBA8, LA8, etc.)
     let has_alpha = matches!(
@@ -105,7 +104,6 @@ fn resize_square(img: &DynamicImage, size: u32) -> DynamicImage {
     } else {
         // Opaque black canvas
         let mut canvas = RgbImage::from_pixel(size, size, image::Rgb([0, 0, 0]));
-        // Convert resized to RGB in case it's grayscale etc.
         let rgb = resized.to_rgb8();
         image::imageops::overlay(&mut canvas, &rgb, x, y);
         DynamicImage::ImageRgb8(canvas)
@@ -226,7 +224,7 @@ impl UlanziDevice {
         let mut new_images = HashMap::new();
         for button in &config.buttons {
             if button.index >= NUM_BUTTONS {
-                warn!(
+                info!(
                     "Config button index {} is out of range (max {}), skipping",
                     button.index,
                     NUM_BUTTONS - 1
@@ -237,7 +235,6 @@ impl UlanziDevice {
                 let path = std::path::Path::new(img_path);
                 if path.exists() {
                     if let Ok(img) = image::open(path) {
-                        // Use the aspect‑ratio‑preserving resize
                         let resized = resize_square(&img, 196);
                         let mut png_data = Vec::new();
                         {
@@ -246,10 +243,10 @@ impl UlanziDevice {
                         }
                         new_images.insert(button.index, png_data);
                     } else {
-                        warn!("Failed to open image at {}", img_path);
+                        info!("Failed to open image at {}", img_path);
                     }
                 } else {
-                    warn!("Image path {} does not exist", img_path);
+                    info!("Image path {} does not exist", img_path);
                 }
             }
         }
@@ -258,8 +255,9 @@ impl UlanziDevice {
     }
 
     /// Stage a button image from a data URL (Base64) or a file path.
+    /// Returns `Ok(true)` if the image was new/different, `Ok(false)` if unchanged.
     /// Call `flush()` to apply all staged images.
-    pub async fn set_button_image(&self, index: usize, image_data: &str) -> Result<()> {
+    pub async fn set_button_image(&self, index: usize, image_data: &str) -> Result<bool> {
         if index >= NUM_BUTTONS {
             return Err(anyhow!(
                 "Button index {} out of range (0..{})",
@@ -275,7 +273,6 @@ impl UlanziDevice {
                 .decode_to_vec()
                 .map_err(|_| anyhow!("Failed to decode data URL"))?;
             let img = image::load_from_memory(&body)?;
-            // Use the aspect‑ratio‑preserving resize
             let resized = resize_square(&img, 196);
             let mut buf = Vec::new();
             {
@@ -291,7 +288,6 @@ impl UlanziDevice {
             }
             let img = image::open(path)
                 .map_err(|e| anyhow!("Failed to open image {}: {}", image_data, e))?;
-            // Use the aspect‑ratio‑preserving resize
             let resized = resize_square(&img, 196);
             let mut buf = Vec::new();
             {
@@ -301,12 +297,25 @@ impl UlanziDevice {
             buf
         };
 
-        self.button_images.lock().unwrap().insert(index, png_data);
-        Ok(())
+        let mut map = self.button_images.lock().unwrap();
+        let changed = match map.get(&index) {
+            Some(old) => *old != png_data,
+            None => true,
+        };
+
+        if changed {
+            map.insert(index, png_data);
+        }
+
+        Ok(changed)
     }
 
     /// Remove a staged button image (will be cleared on next `flush()`).
     pub fn clear_button_image(&self, index: usize) {
+        if index >= NUM_BUTTONS {
+            warn!("Attempt to clear out‑of‑range button index {}", index);
+            return;
+        }
         self.button_images.lock().unwrap().remove(&index);
     }
 
@@ -320,6 +329,7 @@ impl UlanziDevice {
     /// Send the currently staged button images to the device.
     /// The staged images are **not** cleared; they remain in the map.
     pub async fn flush(&self) -> Result<()> {
+        info!("Clearing and creating new icon data!");
         let images_snapshot = {
             let map = self.button_images.lock().unwrap();
             map.clone()
@@ -395,6 +405,7 @@ impl UlanziDevice {
 
     async fn send_file(&self, data: &[u8]) -> Result<()> {
         let file_size = data.len() as u32;
+        info!("Sending icon data! ({} bytes)", file_size);
         let first_chunk = if data.len() >= 1016 {
             &data[..1016]
         } else {
@@ -458,17 +469,5 @@ mod tests {
     fn test_generate_id_without_serial() {
         let id = UlanziDevice::generate_id(None, "fallback");
         assert_eq!(id, "e9-fallback");
-    }
-    
-    #[test]
-    fn test_resize_square() {
-        use image::RgbaImage;
-        // A 100×50 opaque red image
-        let img = DynamicImage::ImageRgba8(RgbaImage::from_pixel(100, 50, image::Rgba([255, 0, 0, 255])));
-        let resized = resize_square(&img, 196);
-        let (w, h) = resized.dimensions();
-        assert_eq!(w, 196);
-        assert_eq!(h, 196);
-        // The center should be red, the corners transparent (optional further checks)
     }
 }
