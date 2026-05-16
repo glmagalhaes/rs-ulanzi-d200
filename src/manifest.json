@@ -1,7 +1,7 @@
 {
   "Name": "Ulanzi D200(H)",
   "Description": "Device support plugin for the Ulanzi Stream Controller D200 and D200H",
-  "Author": "mtesseract",
+  "Author": "glmagalhaes, mtesseract, mquest",
   "Version": "0.4.0",
   "PluginUUID": "io.github.mtesseract.opendeck-ulanzi-d200",
   "CodePathLin": "rs-ulanzi-d200-linux",
