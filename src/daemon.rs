@@ -29,6 +29,8 @@ pub struct UlanziDaemon {
     hw_event_tx: Option<mpsc::Sender<HardwareEvent>>,
     device_input_rx: mpsc::Receiver<(String, ButtonEvent)>,
     device_input_tx: mpsc::Sender<(String, ButtonEvent)>,
+    flush_in_progress: bool,
+    pending_flush: bool,
 }
 
 impl UlanziDaemon {
@@ -62,6 +64,8 @@ impl UlanziDaemon {
             hw_event_tx,
             device_input_rx,
             device_input_tx,
+            flush_in_progress: false,
+            pending_flush: false,
         })
     }
 
@@ -140,11 +144,7 @@ impl UlanziDaemon {
                 }
             }
             if needs_flush {
-                for device in self.devices.values() {
-                    if let Err(e) = device.flush().await {
-                        error!("Failed to flush device {}: {}", device.get_id(), e);
-                    }
-                }
+                self.perform_flush().await;
             }
         }
 
@@ -183,28 +183,26 @@ impl UlanziDaemon {
                         std::future::pending::<Option<BridgeEvent>>().await
                     }
                 } => {
-                    // Collect all pending commands into a local vector
+                    // Collect all pending commands
                     let mut commands = vec![cmd];
                     if let Some(rx) = &mut self.plugin_cmd_rx {
                         while let Ok(c) = rx.try_recv() {
                             commands.push(c);
                         }
                     }
-                    // Process commands (no borrow on self.plugin_cmd_rx during this loop)
+
                     let mut needs_flush = false;
                     for cmd in commands {
                         if self.handle_plugin_command(cmd).await {
                             needs_flush = true;
                         }
                     }
+
                     if needs_flush {
-                        for device in self.devices.values() {
-                            if let Err(e) = device.flush().await {
-                                error!("Failed to flush device {}: {}", device.get_id(), e);
-                            }
-                        }
+                        self.request_flush().await;
                     }
                 }
+
                 // Keep‑alive: update small window with current stats
                 _ = keep_alive_interval.tick() => {
                     use chrono::Local;
@@ -242,7 +240,7 @@ impl UlanziDaemon {
     }
 
     async fn handle_device_event(&mut self, device_id: &str, event: ButtonEvent) {
-        debug!("Button event from {}: {:?}", device_id, event);
+        info!("Button event from {}: {:?}", device_id, event);
         if let Some(ref tx) = self.hw_event_tx {
             let outbound = if event.pressed {
                 HardwareEvent::KeyDown {
@@ -256,10 +254,9 @@ impl UlanziDaemon {
                 }
             };
             if let Err(e) = tx.send(outbound).await {
-                warn!("Failed to broadcast hardware event: {}", e);
+                info!("Failed to broadcast hardware event: {}", e);
             }
         }
-        // No local actions – everything is delegated to the OpenDeck plugin
     }
 
     async fn handle_plugin_command(&mut self, cmd: BridgeEvent) -> bool {
@@ -270,6 +267,7 @@ impl UlanziDaemon {
                 position,
                 image_base64,
             } => {
+                info!("SetImage: device={} position={} image_len={}", device_id, position, image_base64.len());
                 let dev = if let Some(d) = self.devices.get_mut(&device_id) {
                     Some(d)
                 } else {
@@ -284,13 +282,14 @@ impl UlanziDaemon {
                         dirty = true;
                     }
                 } else {
-                    warn!("SetImage: No target device found for {}", device_id);
+                    info!("SetImage: No target device found for {}", device_id);
                 }
             }
             BridgeEvent::ClearImage {
                 device_id,
                 position,
             } => {
+                info!("ClearImage: device={} position={}", device_id, position);
                 let dev = if let Some(d) = self.devices.get_mut(&device_id) {
                     Some(d)
                 } else {
@@ -302,7 +301,7 @@ impl UlanziDaemon {
                     dev.clear_button_image(index);
                     dirty = true;
                 } else {
-                    warn!("ClearImage: No target device found for {}", device_id);
+                    info!("ClearImage: No target device found for {}", device_id);
                 }
             }
             BridgeEvent::SetBrightness {
@@ -316,15 +315,45 @@ impl UlanziDaemon {
                 };
                 if let Some(dev) = dev {
                     if let Err(e) = dev.set_brightness(brightness).await {
-                        error!("Failed to set brightness: {}", e);
+                        info!("Failed to set brightness: {}", e);
                     }
                 } else {
-                    warn!("SetBrightness: No target device found for {}", device_id);
+                    info!("SetBrightness: No target device found for {}", device_id);
                 }
             }
             BridgeEvent::DeviceConnected(_) | BridgeEvent::DeviceDisconnected(_) => {}
         }
         dirty
+    }
+
+    /// Request a flush; if one is already in progress, mark pending.
+    async fn request_flush(&mut self) {
+        if self.flush_in_progress {
+            self.pending_flush = true;
+        } else {
+            self.perform_flush().await;
+        }
+    }
+
+    /// Perform the actual flush, then handle any pending flush that arrived during it.
+    async fn perform_flush(&mut self) {
+        loop {
+            self.flush_in_progress = true;
+            for device in self.devices.values() {
+                if let Err(e) = device.flush().await {
+                    error!("Failed to flush device {}: {}", device.get_id(), e);
+                }
+            }
+            self.flush_in_progress = false;
+
+            // If a new flush was requested while we were flushing, do it now
+            if self.pending_flush {
+                self.pending_flush = false;
+                // loop back to flush again
+            } else {
+                break;
+            }
+        }
     }
 }
 
@@ -350,6 +379,8 @@ mod tests {
             hw_event_tx: Some(hw_event_tx),
             device_input_rx,
             device_input_tx: device_input_tx_internal,
+            flush_in_progress: false,
+            pending_flush: false,
         };
 
         let event = ButtonEvent {
@@ -386,6 +417,8 @@ mod tests {
             hw_event_tx: Some(hw_event_tx),
             device_input_rx,
             device_input_tx: device_input_tx_internal,
+            flush_in_progress: false,
+            pending_flush: false,
         };
 
         let event = ButtonEvent {
