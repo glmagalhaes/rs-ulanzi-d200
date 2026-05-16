@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::io::{Cursor, Write};
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Result};
@@ -24,6 +23,7 @@ pub const DEVICE_NAMESPACE: &str = "e9";
 const PACKET_SIZE: usize = 1024;
 const HEADER: [u8; 2] = [0x7c, 0x7c];
 const USAGE_PAGE: u16 = 0x000c;
+const NUM_BUTTONS: usize = 14;
 
 // ---------------------------------------------------------------------------
 // Command protocol (device‑specific)
@@ -56,18 +56,18 @@ pub struct ButtonEvent {
 // ---------------------------------------------------------------------------
 
 /// A connection to an Ulanzi D200 macro‑pad.
+/// Button images are stored in a `Mutex` and persisted across `flush()` calls.
 pub struct UlanziDevice {
     writer: Arc<TokioMutex<DeviceWriter>>,
     reader: Option<DeviceReader>,
     id: String,
-    /// PNG images for each button index (stored until `flush()`).
+    /// PNG data for each button index (196x196, encoded). Never cleared by `flush()`.
     button_images: Mutex<HashMap<usize, Vec<u8>>>,
 }
 
 impl UlanziDevice {
     // -- Construction -------------------------------------------------------
 
-    /// Connect to the first Ulanzi D200 found on the USB bus.
     pub async fn connect() -> Result<Self> {
         let backend = HidBackend::default();
         let devices: Vec<_> = backend.enumerate().await?.collect().await;
@@ -111,14 +111,12 @@ impl UlanziDevice {
         &self.id
     }
 
-    /// Take ownership of the HID reader (used to spawn an event loop).
     pub fn take_reader(&mut self) -> Option<DeviceReader> {
         self.reader.take()
     }
 
-    // -- Report parsing (static) --------------------------------------------
+    // -- Report parsing -----------------------------------------------------
 
-    /// Parse a raw HID input report into a `ButtonEvent`, if valid.
     pub fn parse_report(buf: &[u8]) -> Option<ButtonEvent> {
         if buf.len() < 12 || &buf[0..2] != &HEADER {
             return None;
@@ -140,7 +138,6 @@ impl UlanziDevice {
 
     // -- High‑level commands ------------------------------------------------
 
-    /// Update the small info window with system stats.
     pub async fn set_small_window_data(
         &self,
         mode: u8,
@@ -154,7 +151,6 @@ impl UlanziDevice {
             .await
     }
 
-    /// Set screen brightness (0‑100).
     pub async fn set_brightness(&self, brightness: u8) -> Result<()> {
         let brightness = brightness.min(100);
         let payload = brightness.to_string().into_bytes();
@@ -164,7 +160,6 @@ impl UlanziDevice {
         Ok(())
     }
 
-    /// Push a JSON style object (label colours, fonts, etc.).
     pub async fn set_label_style(&self, style: &serde_json::Value) -> Result<()> {
         let payload = serde_json::to_vec(style)?;
         self.send_command(CommandProtocol::OutSetLabelStyle, &payload)
@@ -173,7 +168,32 @@ impl UlanziDevice {
         Ok(())
     }
 
-    /// Stage a button image from a data URL.  Call `flush()` afterwards.
+
+    /// Replace **all** button images from a configuration, then send to device immediately.
+    pub async fn set_buttons(&self, config: &crate::config::Config) -> Result<()> {
+        let mut new_images = HashMap::new();
+        for button in &config.buttons {
+            if let Some(ref img_path) = button.image {
+                let path = std::path::Path::new(img_path);
+                if path.exists() {
+                    if let Ok(img) = image::open(path) {
+                        let resized = img.resize_exact(196, 196, image::imageops::FilterType::Triangle);
+                        let mut png_data = Vec::new();
+                        {
+                            let mut cursor = std::io::Cursor::new(&mut png_data);
+                            resized.write_to(&mut cursor, image::ImageFormat::Png)?;
+                        }
+                        new_images.insert(button.index, png_data);
+                    }
+                }
+            }
+        }
+        *self.button_images.lock().unwrap() = new_images;
+        self.flush().await
+    }
+
+    /// Stage a button image from a data URL (Base64). Does **not** send to device.
+    /// Call `flush()` to apply all staged images.
     pub async fn set_button_image(&self, index: usize, image_data: &str) -> Result<()> {
         let url = DataUrl::process(image_data).map_err(|_| anyhow!("Invalid data URL"))?;
         let (body, _) = url
@@ -181,7 +201,7 @@ impl UlanziDevice {
             .map_err(|_| anyhow!("Failed to decode data URL"))?;
 
         let img = image::load_from_memory(&body)?;
-        let resized = img.resize_exact(196, 196, image::imageops::FilterType::Lanczos3);
+        let resized = img.resize_exact(196, 196, image::imageops::FilterType::Triangle);
 
         let mut png_data = Vec::new();
         {
@@ -196,70 +216,41 @@ impl UlanziDevice {
         Ok(())
     }
 
-    /// Remove a previously staged button image.
+    /// Remove a staged button image (will be cleared on next `flush()`).
     pub fn clear_button_image(&self, index: usize) {
         self.button_images.lock().unwrap().remove(&index);
     }
 
-    /// Replace **all** button images from a configuration, then send to
-    /// device immediately.
-    pub async fn set_buttons(&self, config: &crate::config::Config) -> Result<()> {
-        let mut new_images = HashMap::new();
-
-        for button in &config.buttons {
-            if let Some(ref img_path) = button.image {
-                let path = Path::new(img_path);
-                if path.exists() {
-                    if let Ok(img) = image::open(path) {
-                        let resized = img.resize_exact(
-                            196,
-                            196,
-                            image::imageops::FilterType::Lanczos3,
-                        );
-                        let mut png_data = Vec::new();
-                        {
-                            let mut cursor = Cursor::new(&mut png_data);
-                            resized.write_to(&mut cursor, image::ImageFormat::Png)?;
-                        }
-                        new_images.insert(button.index, png_data);
-                    }
-                }
-            }
-        }
-
-        *self.button_images.lock().unwrap() = new_images;
+    /// Remove **all** staged button images and send an empty configuration
+    /// to the device (clears all buttons).
+    pub async fn clear_all_images(&self) -> Result<()> {
+        self.button_images.lock().unwrap().clear();
         self.flush().await
     }
 
     /// Send the currently staged button images to the device.
-    ///
-    /// **IMPORTANT:** The ZIP structure below is **exactly** what the D200
-    /// firmware expects.  Do **not** reorder, rename, or change the compression
-    /// of any entry – even a tiny change will blank the screen.
+    /// The staged images are **not** cleared; they remain in the map.
     pub async fn flush(&self) -> Result<()> {
-        // --- Race fix: snapshot the button images ---
+        // Take a snapshot (clone) – the map is not modified
         let images_snapshot = {
             let map = self.button_images.lock().unwrap();
             map.clone()
         };
 
-        // --- Build ZIP using upstream's proven layout (no retry loop) ---
         let mut buf = Vec::new();
         {
             let mut zip = zip::ZipWriter::new(Cursor::new(&mut buf));
-            let stored: FileOptions<()> =
-                FileOptions::default().compression_method(zip::CompressionMethod::Stored);
-            let deflated: FileOptions<()> =
-                FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+            let stored: FileOptions<()> = FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            let deflated: FileOptions<()> = FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
-            // 1. dummy.txt FIRST – shifts offsets away from bad 1024-byte boundaries
+            // 1. dummy.txt – shifts offsets away from 1024-byte boundaries
             zip.start_file("dummy.txt", stored)?;
-            zip.write_all(b"")?; // empty is fine; presence matters
+            zip.write_all(b"")?;
 
-            // 2. Icons (using snapshot, not live map)
+            // 2. Icons and manifest
             let mut manifest = json!({});
 
-            for i in 0..14 {
+            for i in 0..NUM_BUTTONS {
                 let col = i % 5;
                 let row = i / 5;
                 let key = format!("{}_{}", col, row);
@@ -271,32 +262,25 @@ impl UlanziDevice {
                     zip.write_all(img_data)?;
                     view_param["Icon"] = json!(format!("icons/{}", icon_name));
                 } else {
-                    // Explicitly clear the icon for buttons without an image
                     view_param["Icon"] = json!("");
                 }
 
                 manifest[key] = json!({ "State": 0, "ViewParam": [view_param] });
             }
 
-            // 3. manifest.json
             zip.start_file("manifest.json", deflated)?;
             zip.write_all(serde_json::to_string(&manifest)?.as_bytes())?;
 
-            // 4. sentinel.txt LAST – absorbs the firmware’s final‑entry drop
+            // 3. sentinel.txt – absorbs firmware's final‑entry drop
             zip.start_file("sentinel.txt", stored)?;
             zip.write_all(b"")?;
 
             zip.finish()?;
         }
 
-        // Optional: small delay before sending (helps some devices)
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-
         self.send_file(&buf).await?;
-        info!(
-            "Successfully sent button configuration ({} bytes)",
-            buf.len()
-        );
+        info!("Successfully sent button configuration ({} bytes)", buf.len());
         Ok(())
     }
 
@@ -310,20 +294,16 @@ impl UlanziDevice {
 
     async fn send_file(&self, data: &[u8]) -> Result<()> {
         let file_size = data.len() as u32;
-
-        // First chunk (max 1016 bytes payload + 8 byte header)
         let first_chunk = if data.len() >= 1016 {
             &data[..1016]
         } else {
             data
         };
-        let first_packet =
-            self.build_packet(CommandProtocol::OutSetButtons, first_chunk, file_size);
+        let first_packet = self.build_packet(CommandProtocol::OutSetButtons, first_chunk, file_size);
 
         let mut writer = self.writer.lock().await;
         writer.write_output_report(&first_packet).await?;
 
-        // Remaining raw 1024‑byte chunks
         if data.len() > 1016 {
             for chunk in data[1016..].chunks(1024) {
                 let mut packet = [0u8; PACKET_SIZE];
@@ -332,46 +312,34 @@ impl UlanziDevice {
                 writer.write_output_report(&packet).await?;
             }
         }
-
         Ok(())
     }
 
     fn build_packet(&self, command: CommandProtocol, data: &[u8], total_length: u32) -> Vec<u8> {
         let mut packet = Vec::with_capacity(PACKET_SIZE);
-
-        // header
         packet.extend_from_slice(&HEADER);
 
-        // command (big‑endian)
         let mut cmd_buf = [0u8; 2];
         (&mut cmd_buf[..])
             .write_u16::<BigEndian>(command as u16)
             .unwrap();
         packet.extend_from_slice(&cmd_buf);
 
-        // total length (little‑endian)
         let mut len_buf = [0u8; 4];
         (&mut len_buf[..])
             .write_u32::<LittleEndian>(total_length)
             .unwrap();
         packet.extend_from_slice(&len_buf);
 
-        // payload
         let data_len = data.len().min(PACKET_SIZE - 8);
         packet.extend_from_slice(&data[..data_len]);
 
-        // pad to full packet size
         if packet.len() < PACKET_SIZE {
             packet.resize(PACKET_SIZE, 0);
         }
-
         packet
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

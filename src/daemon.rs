@@ -25,10 +25,8 @@ pub struct UlanziDaemon {
     telemetry: SystemMonitor,
     cpu_usage: u8,
     mem_usage: u8,
-    // WebSocket communication channels
     plugin_cmd_rx: Option<mpsc::Receiver<BridgeEvent>>,
     hw_event_tx: Option<mpsc::Sender<HardwareEvent>>,
-    // Internal channel for device inputs
     device_input_rx: mpsc::Receiver<(String, ButtonEvent)>,
     device_input_tx: mpsc::Sender<(String, ButtonEvent)>,
 }
@@ -40,9 +38,9 @@ impl UlanziDaemon {
         hw_event_tx: Option<mpsc::Sender<HardwareEvent>>,
     ) -> Result<Self> {
         let (device_input_tx, device_input_rx) = mpsc::channel(100);
-
         let mut devices = HashMap::new();
 
+        // Try to connect to the first available device
         match UlanziDevice::connect().await {
             Ok(device) => {
                 devices.insert(device.get_id().to_string(), device);
@@ -70,32 +68,36 @@ impl UlanziDaemon {
     pub async fn run(mut self) -> Result<()> {
         info!("Ulanzi Daemon started");
 
-        // Initial setup for connected devices
+        // --- Initial device setup for all connected devices ---
         for device in self.devices.values_mut() {
+            // 1. Clear the screen (all 14 buttons empty)
+            if let Err(e) = device.clear_all_images().await {
+                error!("Failed to clear buttons for {}: {}", device.get_id(), e);
+            }
+
+            // 2. Apply brightness and label style from config
             if let Err(e) = device.set_brightness(self.config.brightness).await {
                 error!("Failed to set brightness for {}: {}", device.get_id(), e);
             }
             if let Ok(label_style) = serde_json::to_value(&self.config.label_style) {
                 let _ = device.set_label_style(&label_style).await;
             }
-            if let Err(e) = device.set_buttons(&self.config).await {
-                error!(
-                    "Failed to set initial buttons for {}: {}",
-                    device.get_id(),
-                    e
-                );
-            }
-            let _ = device.set_small_window_data(self.config.display_mode, 0, 0, "", 0).await;
 
-            // Notify plugins about this device
+            // 3. Start the small‑window data with zeros (will be updated by keep‑alive)
+            let _ = device
+                .set_small_window_data(self.config.display_mode, 0, 0, "", 0)
+                .await;
+
+            // 4. Notify plugins that a device is connected
             if let Some(ref tx) = self.hw_event_tx {
-                let event = HardwareEvent::DeviceConnected {
-                    device_id: device.get_id().to_string(),
-                };
-                let _ = tx.send(event).await;
+                let _ = tx
+                    .send(HardwareEvent::DeviceConnected {
+                        device_id: device.get_id().to_string(),
+                    })
+                    .await;
             }
 
-            // Spawn reader task
+            // 5. Spawn reader task for button events
             if let Some(mut reader) = device.take_reader() {
                 let tx = self.device_input_tx.clone();
                 let device_id = device.get_id().to_string();
@@ -103,15 +105,14 @@ impl UlanziDaemon {
                     let mut buf = [0u8; 1024];
                     loop {
                         match reader.read_input_report(&mut buf).await {
-                            Ok(len) => {
-                                if len > 0 {
-                                    if let Some(event) = UlanziDevice::parse_report(&buf[..len]) {
-                                        if let Err(_) = tx.send((device_id.clone(), event)).await {
-                                            break; // Receiver dropped
-                                        }
+                            Ok(len) if len > 0 => {
+                                if let Some(event) = UlanziDevice::parse_report(&buf[..len]) {
+                                    if tx.send((device_id.clone(), event)).await.is_err() {
+                                        break; // receiver dropped
                                     }
                                 }
                             }
+                            Ok(_) => continue,
                             Err(e) => {
                                 error!("Device {} read error: {}", device_id, e);
                                 break;
@@ -123,17 +124,39 @@ impl UlanziDaemon {
             }
         }
 
+        // --- Drain any initial plugin commands that arrived before the main loop ---
+        let mut initial_commands = Vec::new();
+        if let Some(rx) = &mut self.plugin_cmd_rx {
+            while let Ok(cmd) = rx.try_recv() {
+                initial_commands.push(cmd);
+            }
+        }
+        if !initial_commands.is_empty() {
+            info!("Processing {} initial plugin commands", initial_commands.len());
+            let mut needs_flush = false;
+            for cmd in initial_commands {
+                if self.handle_plugin_command(cmd).await {
+                    needs_flush = true;
+                }
+            }
+            if needs_flush {
+                for device in self.devices.values() {
+                    if let Err(e) = device.flush().await {
+                        error!("Failed to flush device {}: {}", device.get_id(), e);
+                    }
+                }
+            }
+        }
+
+        // --- Timers and shutdown signal ---
         let mut keep_alive_interval = interval(Duration::from_millis(100));
         let mut telemetry_interval = interval(Duration::from_millis(self.config.stats_interval_ms));
 
-        // Signal handling for graceful shutdown
         let shutdown = async {
             #[cfg(unix)]
             {
-                let mut sigint =
-                    signal::unix::signal(signal::unix::SignalKind::interrupt()).unwrap();
-                let mut sigterm =
-                    signal::unix::signal(signal::unix::SignalKind::terminate()).unwrap();
+                let mut sigint = signal::unix::signal(signal::unix::SignalKind::interrupt()).unwrap();
+                let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate()).unwrap();
                 tokio::select! {
                     _ = sigint.recv() => info!("Received SIGINT, shutting down..."),
                     _ = sigterm.recv() => info!("Received SIGTERM, shutting down..."),
@@ -147,14 +170,12 @@ impl UlanziDaemon {
         };
         tokio::pin!(shutdown);
 
+        // --- Main event loop ---
         loop {
             tokio::select! {
-                // Handle Signals
-                _ = &mut shutdown => {
-                    break;
-                }
+                _ = &mut shutdown => break,
 
-                // Handle WebSocket Commands
+                // Handle WebSocket commands from OpenDeck plugin
                 Some(cmd) = async {
                     if let Some(rx) = &mut self.plugin_cmd_rx {
                         rx.recv().await
@@ -162,55 +183,52 @@ impl UlanziDaemon {
                         std::future::pending::<Option<BridgeEvent>>().await
                     }
                 } => {
-                    let mut needs_flush = self.handle_plugin_command(cmd).await;
-                    loop {
-                        let next_cmd_opt = if let Some(rx) = &mut self.plugin_cmd_rx {
-                            rx.try_recv().ok()
-                        } else {
-                            None
-                        };
-                        match next_cmd_opt {
-                            Some(c) => {
-                                if self.handle_plugin_command(c).await {
-                                    needs_flush = true;
-                                }
-                            }
-                            None => break,
+                    // Collect all pending commands into a local vector
+                    let mut commands = vec![cmd];
+                    if let Some(rx) = &mut self.plugin_cmd_rx {
+                        while let Ok(c) = rx.try_recv() {
+                            commands.push(c);
+                        }
+                    }
+                    // Process commands (no borrow on self.plugin_cmd_rx during this loop)
+                    let mut needs_flush = false;
+                    for cmd in commands {
+                        if self.handle_plugin_command(cmd).await {
+                            needs_flush = true;
                         }
                     }
                     if needs_flush {
-                        for dev in self.devices.values() {
-                            if let Err(e) = dev.flush().await {
-                                error!("Failed to flush device {}: {}", dev.get_id(), e);
+                        for device in self.devices.values() {
+                            if let Err(e) = device.flush().await {
+                                error!("Failed to flush device {}: {}", device.get_id(), e);
                             }
                         }
                     }
                 }
-
+                // Keep‑alive: update small window with current stats
                 _ = keep_alive_interval.tick() => {
-                     // Update small window data for all devices
-                     use chrono::Local;
-                     let now = Local::now();
-                     let time_str = now.format("%H:%M:%S").to_string();
-
+                    use chrono::Local;
+                    let now = Local::now();
+                    let time_str = now.format("%H:%M:%S").to_string();
                     for device in self.devices.values() {
                         if let Err(e) = device.set_small_window_data(
                             self.config.display_mode,
                             self.cpu_usage,
                             self.mem_usage,
                             &time_str,
-                            0
+                            0,
                         ).await {
                             debug!("Failed to send keep-alive to {}: {}", device.get_id(), e);
                         }
                     }
                 }
 
-                // Handle Device Inputs (from reader tasks)
-                Some((id, event)) = self.device_input_rx.recv() => {
-                    self.handle_device_event(&id, event).await;
+                // Forward hardware button events to plugins
+                Some((device_id, event)) = self.device_input_rx.recv() => {
+                    self.handle_device_event(&device_id, event).await;
                 }
 
+                // Update telemetry every `stats_interval_ms`
                 _ = telemetry_interval.tick() => {
                     let (cpu, mem) = self.telemetry.get_metrics();
                     self.cpu_usage = cpu;
@@ -225,8 +243,6 @@ impl UlanziDaemon {
 
     async fn handle_device_event(&mut self, device_id: &str, event: ButtonEvent) {
         debug!("Button event from {}: {:?}", device_id, event);
-
-        // 1. Notify Plugins
         if let Some(ref tx) = self.hw_event_tx {
             let outbound = if event.pressed {
                 HardwareEvent::KeyDown {
@@ -239,13 +255,11 @@ impl UlanziDaemon {
                     key_index: event.index as u8,
                 }
             };
-
             if let Err(e) = tx.send(outbound).await {
                 warn!("Failed to broadcast hardware event: {}", e);
             }
         }
-
-        // Local actions removed - entirely handled by OpenAction/OpenDeck
+        // No local actions – everything is delegated to the OpenDeck plugin
     }
 
     async fn handle_plugin_command(&mut self, cmd: BridgeEvent) -> bool {
@@ -261,7 +275,6 @@ impl UlanziDaemon {
                 } else {
                     self.devices.values_mut().next()
                 };
-
                 if let Some(dev) = dev {
                     let index = position as usize;
                     debug!("Setting image for button {} on {}", index, dev.get_id());
@@ -283,7 +296,6 @@ impl UlanziDaemon {
                 } else {
                     self.devices.values_mut().next()
                 };
-
                 if let Some(dev) = dev {
                     let index = position as usize;
                     debug!("Clearing image for button {} on {}", index, dev.get_id());
@@ -302,7 +314,6 @@ impl UlanziDaemon {
                 } else {
                     self.devices.values_mut().next()
                 };
-
                 if let Some(dev) = dev {
                     if let Err(e) = dev.set_brightness(brightness).await {
                         error!("Failed to set brightness: {}", e);
@@ -311,12 +322,7 @@ impl UlanziDaemon {
                     warn!("SetBrightness: No target device found for {}", device_id);
                 }
             }
-            BridgeEvent::DeviceConnected(_) => {
-                // Info only
-            }
-            BridgeEvent::DeviceDisconnected(_) => {
-                // Info only
-            }
+            BridgeEvent::DeviceConnected(_) | BridgeEvent::DeviceDisconnected(_) => {}
         }
         dirty
     }
@@ -351,7 +357,6 @@ mod tests {
             pressed: true,
             state: 1,
         };
-
         daemon.handle_device_event("test_device", event).await;
 
         let received = hw_event_rx.recv().await.unwrap();
@@ -388,7 +393,6 @@ mod tests {
             pressed: false,
             state: 0,
         };
-
         daemon.handle_device_event("test_device", event).await;
 
         let received = hw_event_rx.recv().await.unwrap();
