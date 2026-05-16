@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::io::{Cursor, Write};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{anyhow, Result};
@@ -9,7 +8,7 @@ use async_hid::{AsyncHidWrite, DeviceReader, DeviceWriter, HidBackend};
 use byteorder::{BigEndian, LittleEndian, WriteBytesExt};
 use data_url::DataUrl;
 use futures_util::StreamExt;
-use log::{debug, error, info, warn};
+use log::{debug, info, warn};
 use serde_json::json;
 use tokio::sync::Mutex as TokioMutex;
 use zip::write::FileOptions;
@@ -51,6 +50,7 @@ pub enum CommandProtocol {
 // Button event
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct ButtonEvent {
     pub index: usize,
@@ -330,8 +330,8 @@ impl UlanziDevice {
     }
 
     /// Send the currently staged button images to the device.
-    /// Retries with a growing dummy file to avoid known hardware bug
-    /// (invalid bytes at specific offsets 1016, 1016+1024, ...).
+    /// Retries with a growing dummy file to circumvent known hardware bug
+    /// Chunks start with the bytes [0x00, 0x7c] cause the device to stop rendering correctly
     pub async fn flush(&self) -> Result<()> {
         info!("Building button configuration ZIP with bug workaround");
 
@@ -438,7 +438,7 @@ impl UlanziDevice {
        }
 
         // Required delay before sending
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        // tokio::time::sleep(Duration::from_millis(50)).await;
         self.send_file(&zip_data).await?;
         info!("Successfully sent button configuration ({} bytes)", zip_data.len());
 
