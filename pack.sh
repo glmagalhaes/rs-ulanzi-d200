@@ -5,6 +5,7 @@ set -e  # exit on any error
 BINARY_NAME="rs-ulanzi-d200-linux"
 MANIFEST_SRC="src/manifest.json"
 ASSETS_SRC="src/assets"
+PLUGIN_FOLDER="io.github.mtesseract.opendeck-ulanzi-d200.sdPlugin"
 
 # ---------- Usage ----------
 if [ $# -ne 1 ]; then
@@ -26,6 +27,7 @@ else
     exit 1
 fi
 
+# ---------- Build ----------
 if [ "$MODE" = "debug" ]; then
     cargo build  
 elif [ "$MODE" = "release" ]; then
@@ -54,16 +56,19 @@ fi
 TMP_DIR=$(mktemp -d)
 trap "rm -rf $TMP_DIR" EXIT  # clean up on exit
 
-# ---------- Copy files ----------
-cp "$BINARY_PATH" "$TMP_DIR/"
-cp "$MANIFEST_SRC" "$TMP_DIR/"
-cp -r "$ASSETS_SRC" "$TMP_DIR/"
+# ---------- Create the required parent folder ----------
+mkdir -p "$TMP_DIR/$PLUGIN_FOLDER"
+
+# ---------- Copy files into the plugin folder ----------
+cp "$BINARY_PATH" "$TMP_DIR/$PLUGIN_FOLDER/"
+cp "$MANIFEST_SRC" "$TMP_DIR/$PLUGIN_FOLDER/"
+cp -r "$ASSETS_SRC" "$TMP_DIR/$PLUGIN_FOLDER/"
 
 # ---------- Create zip ----------
-# Remove old zip if exists
 rm -f "$ZIP_NAME"
 cd "$TMP_DIR"
-zip -r "$OLDPWD/$ZIP_NAME" . > /dev/null
+zip -r "$OLDPWD/$ZIP_NAME" "$PLUGIN_FOLDER" > /dev/null
 cd - > /dev/null
 
 echo "Successfully created $ZIP_NAME"
+echo "Zip contains the top-level folder: $PLUGIN_FOLDER/"
