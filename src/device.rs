@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::io::{Cursor, Write};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use async_hid::{AsyncHidWrite, DeviceReader, DeviceWriter, HidBackend};
@@ -31,6 +32,7 @@ pub const NUM_BUTTONS: usize = 14;
 const MAX_COMMAND_PAYLOAD: usize = PACKET_SIZE - 8; // 1016
 
 static FLUSH_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 // ---------------------------------------------------------------------------
 // Command protocol
 // ---------------------------------------------------------------------------
@@ -330,8 +332,8 @@ impl UlanziDevice {
     }
 
     /// Send the currently staged button images to the device.
-    /// Retries with a growing dummy file to circumvent known hardware bug
-    /// Chunks start with the bytes [0x00, 0x7c] cause the device to stop rendering correctly
+    /// Uses unique filenames per flush to force device to reload icons.
+    /// Bounded retries – returns error if a valid ZIP cannot be built.
     pub async fn flush(&self) -> Result<()> {
         info!("Building button configuration ZIP with bug workaround");
 
@@ -342,6 +344,7 @@ impl UlanziDevice {
         };
 
         const INVALID_BYTES: [u8; 2] = [0x00, 0x7c];
+        const MAX_RETRIES: usize = 100;
 
         let mut dummy_retries = 0;
         let mut zip_data = Vec::new();
@@ -356,12 +359,11 @@ impl UlanziDevice {
                 let deflated = FileOptions::<()>::default()
                     .compression_method(zip::CompressionMethod::Deflated);
 
-                // 1. dummy.txt – content grows with retries, using a simple repeating pattern
-                let dummy_content = "x".repeat(8 * dummy_retries);
+                // Dummy file – content grows aggressively
+                let dummy_content = "x".repeat(128 * dummy_retries);
                 zip.start_file("dummy.txt", stored)?;
                 zip.write_all(dummy_content.as_bytes())?;
 
-                // 2. Icons and manifest (unchanged from your original)
                 let mut manifest = json!({});
 
                 for i in 0..NUM_BUTTONS {
@@ -404,7 +406,6 @@ impl UlanziDevice {
                 zip.start_file("manifest.json", deflated)?;
                 zip.write_all(serde_json::to_string(&manifest)?.as_bytes())?;
 
-                // 3. sentinel.txt
                 zip.start_file("sentinel.txt", stored)?;
                 zip.write_all(b"")?;
 
@@ -413,7 +414,6 @@ impl UlanziDevice {
 
             zip_data = cursor.into_inner();
 
-            // Scan for invalid bytes at offsets 1016, 1016+1024, ...
             let file_size = zip_data.len();
             let mut valid = true;
             for offset in (1016..file_size).step_by(1024) {
@@ -435,15 +435,20 @@ impl UlanziDevice {
             }
 
             dummy_retries += 1;
-       }
+            if dummy_retries >= MAX_RETRIES {
+                return Err(anyhow!(
+                    "Failed to build a valid ZIP after {} retries – giving up",
+                    MAX_RETRIES
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
 
-        // Required delay before sending
-        // tokio::time::sleep(Duration::from_millis(50)).await;
         self.send_file(&zip_data).await?;
         info!("Successfully sent button configuration ({} bytes)", zip_data.len());
-
         Ok(())
     }
+
     // -- Low‑level packet I/O -----------------------------------------------
 
     async fn send_command(&self, command: CommandProtocol, payload: &[u8]) -> Result<()> {
