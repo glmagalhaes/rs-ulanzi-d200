@@ -2,10 +2,10 @@ use anyhow::Result;
 use async_hid::AsyncHidRead;
 use log::{debug, error, info, warn};
 use std::collections::HashMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::signal;
 use tokio::sync::mpsc;
-use tokio::time::interval;
+use tokio::time::{interval, sleep_until};
 
 use crate::config::Config;
 use crate::device::{ButtonEvent, UlanziDevice};
@@ -29,8 +29,11 @@ pub struct UlanziDaemon {
     hw_event_tx: Option<mpsc::Sender<HardwareEvent>>,
     device_input_rx: mpsc::Receiver<(String, ButtonEvent)>,
     device_input_tx: mpsc::Sender<(String, ButtonEvent)>,
-    flush_in_progress: bool,
-    pending_flush: bool,
+    // Debouncing & rate limiting
+    flush_deadline: Option<Instant>,
+    last_flush_time: Option<Instant>,
+    debounce_delay: Duration,
+    min_flush_interval: Duration,
 }
 
 impl UlanziDaemon {
@@ -64,13 +67,15 @@ impl UlanziDaemon {
             hw_event_tx,
             device_input_rx,
             device_input_tx,
-            flush_in_progress: false,
-            pending_flush: false,
+            flush_deadline: None,
+            last_flush_time: None,
+            debounce_delay: Duration::from_millis(50),
+            min_flush_interval: Duration::from_millis(20),
         })
     }
 
     pub async fn run(mut self) -> Result<()> {
-        info!("Ulanzi Daemon started");
+        info!("Ulanzi Daemon started (debounced flush)");
 
         // --- Initial device setup for all connected devices ---
         for device in self.devices.values_mut() {
@@ -87,7 +92,7 @@ impl UlanziDaemon {
                 let _ = device.set_label_style(&label_style).await;
             }
 
-            // 3. Start the small‑window data with zeros (will be updated by keep‑alive)
+            // 3. Start the small‑window data with zeros
             let _ = device
                 .set_small_window_data(self.config.display_mode, 0, 0, "", 0)
                 .await;
@@ -112,7 +117,7 @@ impl UlanziDaemon {
                             Ok(len) if len > 0 => {
                                 if let Some(event) = UlanziDevice::parse_report(&buf[..len]) {
                                     if tx.send((device_id.clone(), event)).await.is_err() {
-                                        break; // receiver dropped
+                                        break;
                                     }
                                 }
                             }
@@ -140,15 +145,11 @@ impl UlanziDaemon {
                 "Processing {} initial plugin commands",
                 initial_commands.len()
             );
-            let mut needs_flush = false;
             for cmd in initial_commands {
-                if self.handle_plugin_command(cmd).await {
-                    needs_flush = true;
-                }
+                self.handle_plugin_command(cmd).await;
             }
-            if needs_flush {
-                self.perform_flush().await;
-            }
+            // Schedule a flush after the initial batch
+            self.schedule_flush();
         }
 
         // --- Timers and shutdown signal ---
@@ -178,6 +179,9 @@ impl UlanziDaemon {
 
         // --- Main event loop ---
         loop {
+            // Copy the current deadline (if any) so the future doesn't borrow self.
+            let deadline = self.flush_deadline;
+
             tokio::select! {
                 _ = &mut shutdown => break,
 
@@ -197,16 +201,21 @@ impl UlanziDaemon {
                         }
                     }
 
-                    let mut needs_flush = false;
                     for cmd in commands {
-                        if self.handle_plugin_command(cmd).await {
-                            needs_flush = true;
-                        }
+                        self.handle_plugin_command(cmd).await;
                     }
+                    self.schedule_flush();
+                }
 
-                    if needs_flush {
-                        self.request_flush().await;
+                // Flush deadline reached (debounced)
+                _ = async move {
+                    if let Some(d) = deadline {
+                        sleep_until(d.into()).await;
+                    } else {
+                        std::future::pending::<()>().await;
                     }
+                }, if deadline.is_some() => {
+                    self.perform_flush().await;
                 }
 
                 // Keep‑alive: update small window with current stats
@@ -245,6 +254,49 @@ impl UlanziDaemon {
         Ok(())
     }
 
+    /// Schedule a flush after the debounce delay, respecting the minimum interval
+    /// since the last flush.
+    fn schedule_flush(&mut self) {
+        let now = Instant::now();
+        let mut deadline = now + self.debounce_delay;
+        if let Some(last) = self.last_flush_time {
+            let earliest = last + self.min_flush_interval;
+            if deadline < earliest {
+                deadline = earliest;
+            }
+        }
+        self.flush_deadline = Some(deadline);
+    }
+
+    /// Perform the actual flush (send all staged button images to the device).
+    /// Uses a timeout to avoid hanging, and logs errors without crashing.
+    async fn perform_flush(&mut self) {
+        self.flush_deadline = None;
+
+        // Wrap the flush operation in a timeout.
+        let flush_future = async {
+            for device in self.devices.values() {
+                if let Err(e) = device.flush().await {
+                    info!("Failed to flush device {}: {}", device.get_id(), e);
+                    // Continue with other devices (if any) – don't break.
+                }
+            }
+            self.last_flush_time = Some(Instant::now());
+            info!("Flush completed (or attempted)");
+        };
+
+        match tokio::time::timeout(Duration::from_secs(2), flush_future).await {
+            Ok(_) => {
+                // Flush finished within timeout (success or logged error).
+            }
+            Err(_) => {
+                info!("Flush timed out after 2 seconds – device may be stuck");
+                // Still update last_flush_time to avoid immediate retry storms.
+                self.last_flush_time = Some(Instant::now());
+            }
+        }
+    }
+
     async fn handle_device_event(&mut self, device_id: &str, event: ButtonEvent) {
         debug!("Button event from {}: {:?}", device_id, event);
         if let Some(ref tx) = self.hw_event_tx {
@@ -265,8 +317,7 @@ impl UlanziDaemon {
         }
     }
 
-    async fn handle_plugin_command(&mut self, cmd: BridgeEvent) -> bool {
-        let mut dirty = false;
+    async fn handle_plugin_command(&mut self, cmd: BridgeEvent) {
         match cmd {
             BridgeEvent::SetImage {
                 device_id,
@@ -284,12 +335,11 @@ impl UlanziDaemon {
                     match dev.set_button_image(index, &image_base64).await {
                         Ok(true) => {
                             info!(
-                                "SetImage: device={} position={} image_len={}",
+                                "SetImage: device={} position={} image_len={} (staged)",
                                 dev.get_id(),
                                 index,
                                 image_base64.len()
                             );
-                            dirty = true;
                         }
                         Ok(false) => {
                             debug!("Image unchanged for button {}, skipping", index);
@@ -312,12 +362,11 @@ impl UlanziDaemon {
                 if let Some(dev) = dev {
                     let index = position as usize;
                     info!(
-                        "ClearImage: device={} position={}",
+                        "ClearImage: device={} position={} (staged)",
                         dev.get_id(),
                         index
                     );
                     dev.clear_button_image(index);
-                    dirty = true;
                 } else {
                     warn!("ClearImage: No target device found for {}", device_id);
                 }
@@ -340,37 +389,6 @@ impl UlanziDaemon {
                 }
             }
             BridgeEvent::DeviceConnected(_) | BridgeEvent::DeviceDisconnected(_) => {}
-        }
-        dirty
-    }
-
-    /// Request a flush; if one is already in progress, mark pending.
-    async fn request_flush(&mut self) {
-        if self.flush_in_progress {
-            self.pending_flush = true;
-        } else {
-            self.perform_flush().await;
-        }
-    }
-
-    /// Perform the actual flush, then handle any pending flush that arrived during it.
-    async fn perform_flush(&mut self) {
-        loop {
-            self.flush_in_progress = true;
-            for device in self.devices.values() {
-                if let Err(e) = device.flush().await {
-                    error!("Failed to flush device {}: {}", device.get_id(), e);
-                }
-            }
-            self.flush_in_progress = false;
-
-            // If a new flush was requested while we were flushing, do it now
-            if self.pending_flush {
-                self.pending_flush = false;
-                // loop back to flush again
-            } else {
-                break;
-            }
         }
     }
 }
@@ -397,8 +415,10 @@ mod tests {
             hw_event_tx: Some(hw_event_tx),
             device_input_rx,
             device_input_tx: device_input_tx_internal,
-            flush_in_progress: false,
-            pending_flush: false,
+            flush_deadline: None,
+            last_flush_time: None,
+            debounce_delay: Duration::from_millis(50),
+            min_flush_interval: Duration::from_millis(20),
         };
 
         let event = ButtonEvent {
@@ -435,8 +455,10 @@ mod tests {
             hw_event_tx: Some(hw_event_tx),
             device_input_rx,
             device_input_tx: device_input_tx_internal,
-            flush_in_progress: false,
-            pending_flush: false,
+            flush_deadline: None,
+            last_flush_time: None,
+            debounce_delay: Duration::from_millis(50),
+            min_flush_interval: Duration::from_millis(20),
         };
 
         let event = ButtonEvent {
