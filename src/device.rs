@@ -413,7 +413,7 @@ impl UlanziDevice {
                 zip.start_file("manifest.json", deflated)?;
                 zip.write_all(serde_json::to_string(&manifest)?.as_bytes())?;
 
-                zip.start_file("sentinel.txt", stored)?;
+                zip.start_file("sentinel.txt", deflated)?;
                 zip.write_all(b"")?;
 
                 zip.finish()?;
