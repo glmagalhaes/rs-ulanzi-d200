@@ -11,6 +11,7 @@ use data_url::DataUrl;
 use futures_util::StreamExt;
 use log::{debug, info, warn};
 use rand::{rngs, RngExt, distr::Alphanumeric};
+use rand::seq::SliceRandom;
 use serde_json::json;
 use tokio::sync::Mutex as TokioMutex;
 use zip::write::FileOptions;
@@ -344,7 +345,7 @@ impl UlanziDevice {
         };
 
         const INVALID_BYTES: [u8; 2] = [0x00, 0x7c];
-        const MAX_RETRIES: usize = 100;
+        const MAX_RETRIES: usize = 1000;
 
         let mut dummy_retries = 0;
         let mut zip_data = Vec::new();
@@ -364,7 +365,7 @@ impl UlanziDevice {
                 // let dummy_content = "x".repeat(128 * dummy_retries);
                 let dummy_content: String = rngs::ThreadRng::default()
                     .sample_iter(&Alphanumeric)
-                    .take(128 * dummy_retries)
+                    .take(237 * dummy_retries)
                     .map(char::from)
                     .collect();
 
@@ -373,7 +374,9 @@ impl UlanziDevice {
 
                 let mut manifest = json!({});
 
-                for i in 0..NUM_BUTTONS {
+                let mut numbers: Vec<usize> = (0..NUM_BUTTONS).collect();
+                numbers.shuffle(&mut rngs::ThreadRng::default());
+                for i in numbers {
                     if i == 13 {
                         let key1 = "3_2";
                         let key2 = "4_2";
