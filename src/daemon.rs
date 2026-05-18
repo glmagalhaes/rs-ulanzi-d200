@@ -282,7 +282,7 @@ impl UlanziDaemon {
                 }
             }
             self.last_flush_time = Some(Instant::now());
-            info!("Flush completed (or attempted)");
+            debug!("Flush completed (or attempted)");
         };
 
         match tokio::time::timeout(Duration::from_secs(2), flush_future).await {
@@ -334,7 +334,7 @@ impl UlanziDaemon {
                     debug!("Setting image for button {} on {}", index, dev.get_id());
                     match dev.set_button_image(index, &image_base64).await {
                         Ok(true) => {
-                            info!(
+                            debug!(
                                 "SetImage: device={} position={} image_len={} (staged)",
                                 dev.get_id(),
                                 index,
@@ -361,7 +361,7 @@ impl UlanziDaemon {
                 };
                 if let Some(dev) = dev {
                     let index = position as usize;
-                    info!(
+                    debug!(
                         "ClearImage: device={} position={} (staged)",
                         dev.get_id(),
                         index

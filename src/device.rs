@@ -231,7 +231,7 @@ impl UlanziDevice {
         let mut new_images = HashMap::new();
         for button in &config.buttons {
             if button.index >= NUM_BUTTONS {
-                info!(
+                debug!(
                     "Config button index {} is out of range (max {}), skipping",
                     button.index,
                     NUM_BUTTONS - 1
@@ -337,7 +337,7 @@ impl UlanziDevice {
     /// Uses unique filenames per flush to force device to reload icons.
     /// Bounded retries – returns error if a valid ZIP cannot be built.
     pub async fn flush(&self) -> Result<()> {
-        info!("Building button configuration ZIP with bug workaround");
+        debug!("Building button configuration ZIP with bug workaround");
 
         let images_snapshot = {
             let map = self.button_images.lock().unwrap();
@@ -440,7 +440,7 @@ impl UlanziDevice {
             }
 
             if valid {
-                info!("ZIP archive passed the byte‑offset check ({} retries)", dummy_retries);
+                debug!("ZIP archive passed the byte‑offset check ({} retries)", dummy_retries);
                 break;
             }
 
@@ -455,7 +455,7 @@ impl UlanziDevice {
         }
 
         self.send_file(&zip_data).await?;
-        info!("Successfully sent button configuration ({} bytes)", zip_data.len());
+        debug!("Successfully sent button configuration ({} bytes)", zip_data.len());
         Ok(())
     }
 
@@ -476,7 +476,7 @@ impl UlanziDevice {
 
     async fn send_file(&self, data: &[u8]) -> Result<()> {
         let file_size = data.len() as u32;
-        info!("Sending icon data! ({} bytes)", file_size);
+        debug!("Sending icon data! ({} bytes)", file_size);
         let first_chunk = if data.len() >= 1016 {
             &data[..1016]
         } else {
