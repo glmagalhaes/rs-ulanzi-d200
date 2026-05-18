@@ -10,6 +10,7 @@ use byteorder::{BigEndian, LittleEndian, WriteBytesExt};
 use data_url::DataUrl;
 use futures_util::StreamExt;
 use log::{debug, info, warn};
+use rand::{rngs, RngExt, distr::Alphanumeric};
 use serde_json::json;
 use tokio::sync::Mutex as TokioMutex;
 use zip::write::FileOptions;
@@ -337,7 +338,6 @@ impl UlanziDevice {
     pub async fn flush(&self) -> Result<()> {
         info!("Building button configuration ZIP with bug workaround");
 
-        let flush_id = FLUSH_COUNTER.fetch_add(1, Ordering::Relaxed);
         let images_snapshot = {
             let map = self.button_images.lock().unwrap();
             map.clone()
@@ -350,6 +350,7 @@ impl UlanziDevice {
         let mut zip_data = Vec::new();
 
         loop {
+            let flush_id = FLUSH_COUNTER.fetch_add(1, Ordering::Relaxed);
             zip_data.clear();
             let mut cursor = Cursor::new(Vec::new());
             {
@@ -360,8 +361,14 @@ impl UlanziDevice {
                     .compression_method(zip::CompressionMethod::Deflated);
 
                 // Dummy file – content grows aggressively
-                let dummy_content = "x".repeat(128 * dummy_retries);
-                zip.start_file("dummy.txt", stored)?;
+                // let dummy_content = "x".repeat(128 * dummy_retries);
+                let dummy_content: String = rngs::ThreadRng::default()
+                    .sample_iter(&Alphanumeric)
+                    .take(128 * dummy_retries)
+                    .map(char::from)
+                    .collect();
+
+                zip.start_file("dummy.txt", deflated)?;
                 zip.write_all(dummy_content.as_bytes())?;
 
                 let mut manifest = json!({});
