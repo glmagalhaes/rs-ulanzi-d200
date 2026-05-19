@@ -55,8 +55,8 @@ fn default_brightness() -> u8 {
     100
 }
 fn default_display_mode() -> u8 {
-    return WindowMode::Clock as u8;
-} // Default to CLOCK
+    return WindowMode::Status as u8;
+}
 fn default_stats_interval() -> u64 {
     1000
 }

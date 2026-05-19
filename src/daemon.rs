@@ -25,6 +25,7 @@ pub struct UlanziDaemon {
     telemetry: SystemMonitor,
     cpu_usage: u8,
     mem_usage: u8,
+    gpu_usage: u8,
     plugin_cmd_rx: Option<mpsc::Receiver<BridgeEvent>>,
     hw_event_tx: Option<mpsc::Sender<HardwareEvent>>,
     device_input_rx: mpsc::Receiver<(String, ButtonEvent)>,
@@ -63,6 +64,7 @@ impl UlanziDaemon {
             telemetry,
             cpu_usage: 0,
             mem_usage: 0,
+            gpu_usage: 0,
             plugin_cmd_rx,
             hw_event_tx,
             device_input_rx,
@@ -94,7 +96,8 @@ impl UlanziDaemon {
 
             // 3. Start the small‑window data with zeros
             let _ = device
-                .set_small_window_data(self.config.display_mode, 0, 0, "", 0)
+                .set_small_window_data(self.config.display_mode
+                    , 0, 0, "", 0)
                 .await;
 
             // 4. Notify plugins that a device is connected
@@ -229,7 +232,7 @@ impl UlanziDaemon {
                             self.cpu_usage,
                             self.mem_usage,
                             &time_str,
-                            0,
+                            self.gpu_usage,
                         ).await {
                             debug!("Failed to send keep-alive to {}: {}", device.get_id(), e);
                         }
@@ -243,9 +246,10 @@ impl UlanziDaemon {
 
                 // Update telemetry every `stats_interval_ms`
                 _ = telemetry_interval.tick() => {
-                    let (cpu, mem) = self.telemetry.get_metrics();
+                    let (cpu, mem, gpu) = self.telemetry.get_metrics();
                     self.cpu_usage = cpu;
                     self.mem_usage = mem;
+                    self.gpu_usage = gpu;
                 }
             }
         }
@@ -411,6 +415,7 @@ mod tests {
             telemetry: SystemMonitor::new(),
             cpu_usage: 0,
             mem_usage: 0,
+            gpu_usage: 0,
             plugin_cmd_rx: None,
             hw_event_tx: Some(hw_event_tx),
             device_input_rx,
