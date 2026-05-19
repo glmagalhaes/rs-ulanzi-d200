@@ -10,6 +10,15 @@
   "OS": [
     { "Platform": "linux" }
   ],
-  "Actions": [],
+  "Actions": [
+    {
+      "UUID": "io.github.mtesseract.opendeck-ulanzi-d200.cycle",
+      "Name": "Screen Switch",
+      "Icon": "assets/cycle",
+      "Tooltip": "Switch modes of the status screen.",
+      "Controllers": ["Keypad"],
+      "States": [{ "Image": "assets/cycle" }]
+    }
+  ],
   "DeviceNamespace": "e9"
 }

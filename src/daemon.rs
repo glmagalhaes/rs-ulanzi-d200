@@ -8,6 +8,7 @@ use tokio::sync::mpsc;
 use tokio::time::{interval, sleep_until};
 
 use crate::config::Config;
+use crate::config::WindowMode;
 use crate::device::{ButtonEvent, UlanziDevice};
 use crate::openaction_client::BridgeEvent;
 use crate::telemetry::SystemMonitor;
@@ -35,6 +36,8 @@ pub struct UlanziDaemon {
     last_flush_time: Option<Instant>,
     debounce_delay: Duration,
     min_flush_interval: Duration,
+    // Cycle command channel
+    cycle_rx: mpsc::Receiver<()>,
 }
 
 impl UlanziDaemon {
@@ -42,6 +45,7 @@ impl UlanziDaemon {
         config: Config,
         plugin_cmd_rx: Option<mpsc::Receiver<BridgeEvent>>,
         hw_event_tx: Option<mpsc::Sender<HardwareEvent>>,
+        cycle_rx: mpsc::Receiver<()>,
     ) -> Result<Self> {
         let (device_input_tx, device_input_rx) = mpsc::channel(100);
         let mut devices = HashMap::new();
@@ -73,6 +77,7 @@ impl UlanziDaemon {
             last_flush_time: None,
             debounce_delay: Duration::from_millis(50),
             min_flush_interval: Duration::from_millis(20),
+            cycle_rx,
         })
     }
 
@@ -96,8 +101,7 @@ impl UlanziDaemon {
 
             // 3. Start the small‑window data with zeros
             let _ = device
-                .set_small_window_data(self.config.display_mode
-                    , 0, 0, "", 0)
+                .set_small_window_data(self.config.display_mode, 0, 0, "", 0)
                 .await;
 
             // 4. Notify plugins that a device is connected
@@ -251,6 +255,11 @@ impl UlanziDaemon {
                     self.mem_usage = mem;
                     self.gpu_usage = gpu;
                 }
+
+                // Handle cycle command from action
+                Some(()) = self.cycle_rx.recv() => {
+                    self.cycle_small_window().await;
+                }
             }
         }
 
@@ -395,6 +404,37 @@ impl UlanziDaemon {
             BridgeEvent::DeviceConnected(_) | BridgeEvent::DeviceDisconnected(_) => {}
         }
     }
+
+    async fn cycle_small_window(&mut self) {
+        let current = self.config.display_mode;
+        let new_mode = match current {
+            0 => 1, // Status -> Clock
+            1 => 2, // Clock -> Clear
+            2 => 0, // Clear -> Status
+            _ => 0,
+        };
+        self.config.display_mode = new_mode;
+        info!("Small‑window mode cycled: {:?} -> {:?}", current, new_mode);
+
+        // Convert to u8 for device command
+        let mode_byte = new_mode as u8;
+        let now = chrono::Local::now();
+        let time_str = now.format("%H:%M:%S").to_string();
+        for device in self.devices.values() {
+            if let Err(e) = device
+                .set_small_window_data(
+                    mode_byte,
+                    self.cpu_usage,
+                    self.mem_usage,
+                    &time_str,
+                    self.gpu_usage,
+                )
+                .await
+            {
+                warn!("Failed to update small window after mode cycle: {}", e);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -408,6 +448,7 @@ mod tests {
         let config = Config::default();
         let (_device_input_tx, device_input_rx) = mpsc::channel(1);
         let (device_input_tx_internal, _device_input_rx_internal) = mpsc::channel(1);
+        let (_cycle_tx, cycle_rx) = mpsc::channel(1);
 
         let mut daemon = UlanziDaemon {
             devices: HashMap::new(),
@@ -424,6 +465,7 @@ mod tests {
             last_flush_time: None,
             debounce_delay: Duration::from_millis(50),
             min_flush_interval: Duration::from_millis(20),
+            cycle_rx,
         };
 
         let event = ButtonEvent {
@@ -449,6 +491,7 @@ mod tests {
         let config = Config::default();
         let (_device_input_tx, device_input_rx) = mpsc::channel(1);
         let (device_input_tx_internal, _device_input_rx_internal) = mpsc::channel(1);
+        let (_cycle_tx, cycle_rx) = mpsc::channel(1);
 
         let mut daemon = UlanziDaemon {
             devices: HashMap::new(),
@@ -456,6 +499,7 @@ mod tests {
             telemetry: SystemMonitor::new(),
             cpu_usage: 0,
             mem_usage: 0,
+            gpu_usage: 0,
             plugin_cmd_rx: None,
             hw_event_tx: Some(hw_event_tx),
             device_input_rx,
@@ -464,6 +508,7 @@ mod tests {
             last_flush_time: None,
             debounce_delay: Duration::from_millis(50),
             min_flush_interval: Duration::from_millis(20),
+            cycle_rx,
         };
 
         let event = ButtonEvent {

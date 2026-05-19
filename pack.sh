@@ -5,6 +5,7 @@ set -e  # exit on any error
 BINARY_NAME="rs-ulanzi-d200-linux"
 MANIFEST_SRC="src/manifest.json"
 ASSETS_SRC="src/assets"
+CONFIG_YAML="config.yaml"
 PLUGIN_FOLDER="io.github.mtesseract.opendeck-ulanzi-d200.sdPlugin"
 
 # ---------- Usage ----------
@@ -52,6 +53,12 @@ if [ ! -d "$ASSETS_SRC" ]; then
     exit 1
 fi
 
+if [ ! -f "$CONFIG_YAML" ]; then
+    echo "Error: $CONFIG_YAML directory not found"
+    exit 1
+fi
+
+
 # ---------- Create temporary packaging directory ----------
 TMP_DIR=$(mktemp -d)
 trap "rm -rf $TMP_DIR" EXIT  # clean up on exit
@@ -62,6 +69,7 @@ mkdir -p "$TMP_DIR/$PLUGIN_FOLDER"
 # ---------- Copy files into the plugin folder ----------
 cp "$BINARY_PATH" "$TMP_DIR/$PLUGIN_FOLDER/"
 cp "$MANIFEST_SRC" "$TMP_DIR/$PLUGIN_FOLDER/"
+cp "$CONFIG_YAML" "$TMP_DIR/$PLUGIN_FOLDER/"
 cp -r "$ASSETS_SRC" "$TMP_DIR/$PLUGIN_FOLDER/"
 
 # ---------- Create zip ----------

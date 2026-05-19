@@ -7,7 +7,10 @@ mod telemetry;
 use anyhow::Result;
 use clap::Parser;
 use log::{error, info, warn};
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use openaction::*;
+use tokio::sync::mpsc;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -45,6 +48,31 @@ struct Args {
     info: Option<String>,
 }
 
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(default)]
+struct CycleStatusWindowSettings {
+    current: u8,
+}
+
+struct CycleStatusWindow {
+    cycle_tx: mpsc::Sender<()>,
+}
+
+#[async_trait]
+impl Action for CycleStatusWindow {
+    const UUID: ActionUuid = "io.github.mtesseract.opendeck-ulanzi-d200.cycle";
+    type Settings = CycleStatusWindowSettings;
+
+    async fn key_up(&self, _instance: &Instance, _settings: &Self::Settings) -> OpenActionResult<()> {
+        info!("Cycling display mode");
+        let _ = self.cycle_tx.send(()).await;
+        Ok(())
+    }
+    async fn will_appear(&self, _: &Instance, _: &Self::Settings) -> OpenActionResult<()> {
+		Ok(())
+	}
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Preprocess arguments to handle Stream Deck's single-dash parameters
@@ -80,6 +108,9 @@ async fn main() -> Result<()> {
             }
         }
     };
+
+    // Create the cycle command channel
+    let (cycle_tx, cycle_rx) = mpsc::channel(1);
 
     // 2. Determine Communication Mode
     let (plugin_cmd_rx, hw_event_tx, openaction_handle) = if let Some(ref uuid) = args.plugin_uuid {
@@ -119,6 +150,10 @@ async fn main() -> Result<()> {
             }
             info!("OpenAction Runtime exited");
         });
+
+        // Register the action with the cycle sender
+        let cycle_action = CycleStatusWindow { cycle_tx: cycle_tx.clone() };
+        register_action(cycle_action).await;
 
         // Outbound events forwarder (unchanged)
         tokio::spawn(async move {
@@ -161,7 +196,7 @@ async fn main() -> Result<()> {
 
     // 3. Start Daemon or One-Shot
     if args.daemon || args.plugin_uuid.is_some() {
-        let daemon = daemon::UlanziDaemon::new(config, plugin_cmd_rx, hw_event_tx).await?;
+        let daemon = daemon::UlanziDaemon::new(config, plugin_cmd_rx, hw_event_tx, cycle_rx).await?;
 
         if let Some(oa_handle) = openaction_handle {
             // Plugin mode: exit when EITHER the daemon or the OpenAction runtime finishes
@@ -204,6 +239,5 @@ async fn main() -> Result<()> {
             info!("Initialization complete.");
         }
     }
-
     Ok(())
 }
