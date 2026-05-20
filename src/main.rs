@@ -3,6 +3,7 @@ mod daemon;
 mod device;
 mod openaction_client;
 mod telemetry;
+mod action;
 
 use anyhow::Result;
 use clap::Parser;
@@ -152,7 +153,7 @@ async fn main() -> Result<()> {
         });
 
         // Register the action with the cycle sender
-        let cycle_action = CycleStatusWindow { cycle_tx: cycle_tx.clone() };
+        let cycle_action = action::CycleStatusWindow { cycle_tx: cycle_tx.clone() };
         register_action(cycle_action).await;
 
         // Outbound events forwarder (unchanged)
