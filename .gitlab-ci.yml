@@ -22,6 +22,7 @@ create_release:
   release:
     tag_name: $CI_COMMIT_TAG
     name: "Release $CI_COMMIT_TAG"
+    description: "Automated release from CI pipeline"
     assets:
       links:
         - name: "Plugin ZIP"
