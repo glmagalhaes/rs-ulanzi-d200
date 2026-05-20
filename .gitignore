@@ -9,3 +9,6 @@
 ### Rust ###
 /target/
 **/*.rs.bk
+
+### Debug Files ###
+rs-ulanzi-d200-linux-*.zip
