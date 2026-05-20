@@ -12,7 +12,7 @@ If you have any problem related to the connection to the device or if the device
 ## Platform support
 
 - Linux: Working and being currently development for
-- Mac: Needs someone to test and help with adjustments
+- Mac: Needs someone to test and help with development
 - Windows: Not in the ROADMAP for now
 
 ## Installation
