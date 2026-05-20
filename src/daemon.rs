@@ -11,7 +11,7 @@ use crate::config::Config;
 use crate::config::WindowMode;
 use crate::device::{ButtonEvent, UlanziDevice};
 use crate::openaction_client::BridgeEvent;
-use crate::telemetry::SystemMonitor;
+use crate::system_monitor::SystemMonitor;
 
 #[derive(Debug, Clone)]
 pub enum HardwareEvent {
@@ -23,7 +23,7 @@ pub enum HardwareEvent {
 pub struct UlanziDaemon {
     devices: HashMap<String, UlanziDevice>,
     config: Config,
-    telemetry: SystemMonitor,
+    system_monitor: SystemMonitor,
     cpu_usage: u8,
     mem_usage: u8,
     gpu_usage: u8,
@@ -60,12 +60,12 @@ impl UlanziDaemon {
             }
         }
 
-        let telemetry = SystemMonitor::new();
+        let system_monitor = SystemMonitor::new();
 
         Ok(Self {
             devices,
             config,
-            telemetry,
+            system_monitor,
             cpu_usage: 0,
             mem_usage: 0,
             gpu_usage: 0,
@@ -161,7 +161,7 @@ impl UlanziDaemon {
 
         // --- Timers and shutdown signal ---
         let mut keep_alive_interval = interval(Duration::from_millis(100));
-        let mut telemetry_interval =
+        let mut system_monitor_interval =
             interval(Duration::from_millis(self.config.stats_interval_ms));
 
         let shutdown = async {
@@ -248,9 +248,9 @@ impl UlanziDaemon {
                     self.handle_device_event(&device_id, event).await;
                 }
 
-                // Update telemetry every `stats_interval_ms`
-                _ = telemetry_interval.tick() => {
-                    let (cpu, mem, gpu) = self.telemetry.get_metrics();
+                // Update system_monitor every `stats_interval_ms`
+                _ = system_monitor_interval.tick() => {
+                    let (cpu, mem, gpu) = self.system_monitor.get_metrics();
                     self.cpu_usage = cpu;
                     self.mem_usage = mem;
                     self.gpu_usage = gpu;
@@ -453,7 +453,7 @@ mod tests {
         let mut daemon = UlanziDaemon {
             devices: HashMap::new(),
             config,
-            telemetry: SystemMonitor::new(),
+            system_monitor: SystemMonitor::new(),
             cpu_usage: 0,
             mem_usage: 0,
             gpu_usage: 0,
@@ -496,7 +496,7 @@ mod tests {
         let mut daemon = UlanziDaemon {
             devices: HashMap::new(),
             config,
-            telemetry: SystemMonitor::new(),
+            system_monitor: SystemMonitor::new(),
             cpu_usage: 0,
             mem_usage: 0,
             gpu_usage: 0,

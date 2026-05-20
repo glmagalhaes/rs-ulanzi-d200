@@ -2,7 +2,7 @@ mod config;
 mod daemon;
 mod device;
 mod openaction_client;
-mod telemetry;
+mod system_monitor;
 mod action;
 
 use anyhow::Result;
