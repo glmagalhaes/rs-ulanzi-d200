@@ -1,6 +1,5 @@
 image: rust:latest
 
-# Cache Cargo registry and build artifacts between jobs
 cache:
   paths:
     - target/
@@ -13,28 +12,32 @@ stages:
   - build
   - release
 
-before_script:
-  - apt-get update -qq && apt-get install -y -qq zip
-  - chmod +x pack.sh
-
-# Build release ZIP (on main branch and tags)
+# Build job – uses rust image, needs zip and pack.sh
 build_release:
   stage: build
+  image: rust:latest
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq zip
+    - chmod +x pack.sh
   script:
-    - ./pack.sh release
+    - bash pack.sh release          # explicit bash, no chmod needed if you use bash
+    # or ./pack.sh release (requires chmod already done)
   artifacts:
     paths:
       - rs-ulanzi-d200-linux-release.zip
     expire_in: 1 week
   rules:
-    - if: $CI_COMMIT_BRANCH == "main"
-    - if: $CI_COMMIT_TAG
+    - if: $CI_COMMIT_BRANCH == "main" || $CI_COMMIT_TAG
 
-# (Optional) Debug build for merge requests or other branches
+# Debug build (optional)
 build_debug:
   stage: build
+  image: rust:latest
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq zip
+    - chmod +x pack.sh
   script:
-    - ./pack.sh debug
+    - bash pack.sh debug
   artifacts:
     paths:
       - rs-ulanzi-d200-linux-debug.zip
@@ -43,18 +46,20 @@ build_debug:
     - if: $CI_MERGE_REQUEST_ID
     - if: $CI_COMMIT_BRANCH != "main" && $CI_COMMIT_TAG == null
 
-# Create GitLab Release from the built ZIP (only on tags)
+# Release job – uses release-cli (no apt-get/zip needed)
 create_release:
   stage: release
   image: registry.gitlab.com/gitlab-org/release-cli:latest
   needs:
     - build_release
   script:
-    - echo "Creating release for tag $CI_COMMIT_TAG"
+    - echo "Creating/updating release for tag $CI_COMMIT_TAG"
   release:
     name: "Release $CI_COMMIT_TAG"
     description: "Automated release from CI pipeline"
     tag_name: $CI_COMMIT_TAG
+    # Overwrite if the release already exists
+    ref: $CI_COMMIT_SHA
     assets:
       links:
         - name: "Plugin ZIP"
@@ -62,5 +67,4 @@ create_release:
           link_type: package
   rules:
     - if: $CI_COMMIT_TAG
-  variables:
-    GIT_STRATEGY: none  # release job doesn't need the source code
+  # No before_script, no apt-get, no zip – release-cli doesn't need them
