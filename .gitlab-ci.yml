@@ -1,70 +1,30 @@
-image: rust:latest
-
-cache:
-  paths:
-    - target/
-    - ~/.cargo/registry
-
-variables:
-  CARGO_TERM_COLOR: always
-
 stages:
   - build
   - release
 
-# Build job – uses rust image, needs zip and pack.sh
 build_release:
   stage: build
   image: rust:latest
   before_script:
     - apt-get update -qq && apt-get install -y -qq zip
-    - chmod +x pack.sh
   script:
-    - bash pack.sh release          # explicit bash, no chmod needed if you use bash
-    # or ./pack.sh release (requires chmod already done)
+    - bash pack.sh release
   artifacts:
     paths:
       - rs-ulanzi-d200-linux-release.zip
-    expire_in: 1 week
-  rules:
-    - if: $CI_COMMIT_BRANCH == "main" || $CI_COMMIT_TAG
 
-# Debug build (optional)
-build_debug:
-  stage: build
-  image: rust:latest
-  before_script:
-    - apt-get update -qq && apt-get install -y -qq zip
-    - chmod +x pack.sh
-  script:
-    - bash pack.sh debug
-  artifacts:
-    paths:
-      - rs-ulanzi-d200-linux-debug.zip
-    expire_in: 1 week
-  rules:
-    - if: $CI_MERGE_REQUEST_ID
-    - if: $CI_COMMIT_BRANCH != "main" && $CI_COMMIT_TAG == null
-
-# Release job – uses release-cli (no apt-get/zip needed)
 create_release:
   stage: release
   image: registry.gitlab.com/gitlab-org/release-cli:latest
-  needs:
-    - build_release
+  needs: [build_release]
   script:
-    - echo "Creating/updating release for tag $CI_COMMIT_TAG"
+    - echo "Creating release for $CI_COMMIT_TAG"
   release:
-    name: "Release $CI_COMMIT_TAG"
-    description: "Automated release from CI pipeline"
     tag_name: $CI_COMMIT_TAG
-    # Overwrite if the release already exists
-    ref: $CI_COMMIT_SHA
+    name: "Release $CI_COMMIT_TAG"
     assets:
       links:
         - name: "Plugin ZIP"
           url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/jobs/${CI_JOB_ID}/artifacts/rs-ulanzi-d200-linux-release.zip"
-          link_type: package
   rules:
     - if: $CI_COMMIT_TAG
-  # No before_script, no apt-get, no zip – release-cli doesn't need them
