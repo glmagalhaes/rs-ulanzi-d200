@@ -16,7 +16,7 @@ impl SystemMonitor {
         Self { sys }
     }
 
-    pub fn get_metrics(&mut self) -> (u8, u8) {
+    pub fn get_metrics(&mut self) -> (u8, u8, u8) {
         // Refresh CPU and Memory
         self.sys.refresh_cpu_usage();
         self.sys.refresh_memory();
@@ -31,6 +31,8 @@ impl SystemMonitor {
             0
         };
 
-        (cpu_usage, mem_usage)
+        let  ram_usage = 0;
+
+        (cpu_usage, mem_usage, ram_usage)
     }
 }

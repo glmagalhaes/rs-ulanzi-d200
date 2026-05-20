@@ -2,15 +2,16 @@ use anyhow::Result;
 use async_hid::AsyncHidRead;
 use log::{debug, error, info, warn};
 use std::collections::HashMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::signal;
 use tokio::sync::mpsc;
-use tokio::time::interval;
+use tokio::time::{interval, sleep_until};
 
 use crate::config::Config;
+use crate::config::WindowMode;
 use crate::device::{ButtonEvent, UlanziDevice};
 use crate::openaction_client::BridgeEvent;
-use crate::telemetry::SystemMonitor;
+use crate::system_monitor::SystemMonitor;
 
 #[derive(Debug, Clone)]
 pub enum HardwareEvent {
@@ -22,15 +23,21 @@ pub enum HardwareEvent {
 pub struct UlanziDaemon {
     devices: HashMap<String, UlanziDevice>,
     config: Config,
-    telemetry: SystemMonitor,
+    system_monitor: SystemMonitor,
     cpu_usage: u8,
     mem_usage: u8,
+    gpu_usage: u8,
     plugin_cmd_rx: Option<mpsc::Receiver<BridgeEvent>>,
     hw_event_tx: Option<mpsc::Sender<HardwareEvent>>,
     device_input_rx: mpsc::Receiver<(String, ButtonEvent)>,
     device_input_tx: mpsc::Sender<(String, ButtonEvent)>,
-    flush_in_progress: bool,
-    pending_flush: bool,
+    // Debouncing & rate limiting
+    flush_deadline: Option<Instant>,
+    last_flush_time: Option<Instant>,
+    debounce_delay: Duration,
+    min_flush_interval: Duration,
+    // Cycle command channel
+    cycle_rx: mpsc::Receiver<()>,
 }
 
 impl UlanziDaemon {
@@ -38,6 +45,7 @@ impl UlanziDaemon {
         config: Config,
         plugin_cmd_rx: Option<mpsc::Receiver<BridgeEvent>>,
         hw_event_tx: Option<mpsc::Sender<HardwareEvent>>,
+        cycle_rx: mpsc::Receiver<()>,
     ) -> Result<Self> {
         let (device_input_tx, device_input_rx) = mpsc::channel(100);
         let mut devices = HashMap::new();
@@ -52,25 +60,29 @@ impl UlanziDaemon {
             }
         }
 
-        let telemetry = SystemMonitor::new();
+        let system_monitor = SystemMonitor::new();
 
         Ok(Self {
             devices,
             config,
-            telemetry,
+            system_monitor,
             cpu_usage: 0,
             mem_usage: 0,
+            gpu_usage: 0,
             plugin_cmd_rx,
             hw_event_tx,
             device_input_rx,
             device_input_tx,
-            flush_in_progress: false,
-            pending_flush: false,
+            flush_deadline: None,
+            last_flush_time: None,
+            debounce_delay: Duration::from_millis(50),
+            min_flush_interval: Duration::from_millis(20),
+            cycle_rx,
         })
     }
 
     pub async fn run(mut self) -> Result<()> {
-        info!("Ulanzi Daemon started");
+        info!("Ulanzi Daemon started (debounced flush)");
 
         // --- Initial device setup for all connected devices ---
         for device in self.devices.values_mut() {
@@ -87,7 +99,7 @@ impl UlanziDaemon {
                 let _ = device.set_label_style(&label_style).await;
             }
 
-            // 3. Start the small‑window data with zeros (will be updated by keep‑alive)
+            // 3. Start the small‑window data with zeros
             let _ = device
                 .set_small_window_data(self.config.display_mode, 0, 0, "", 0)
                 .await;
@@ -112,7 +124,7 @@ impl UlanziDaemon {
                             Ok(len) if len > 0 => {
                                 if let Some(event) = UlanziDevice::parse_report(&buf[..len]) {
                                     if tx.send((device_id.clone(), event)).await.is_err() {
-                                        break; // receiver dropped
+                                        break;
                                     }
                                 }
                             }
@@ -140,20 +152,16 @@ impl UlanziDaemon {
                 "Processing {} initial plugin commands",
                 initial_commands.len()
             );
-            let mut needs_flush = false;
             for cmd in initial_commands {
-                if self.handle_plugin_command(cmd).await {
-                    needs_flush = true;
-                }
+                self.handle_plugin_command(cmd).await;
             }
-            if needs_flush {
-                self.perform_flush().await;
-            }
+            // Schedule a flush after the initial batch
+            self.schedule_flush();
         }
 
         // --- Timers and shutdown signal ---
         let mut keep_alive_interval = interval(Duration::from_millis(100));
-        let mut telemetry_interval =
+        let mut system_monitor_interval =
             interval(Duration::from_millis(self.config.stats_interval_ms));
 
         let shutdown = async {
@@ -178,6 +186,9 @@ impl UlanziDaemon {
 
         // --- Main event loop ---
         loop {
+            // Copy the current deadline (if any) so the future doesn't borrow self.
+            let deadline = self.flush_deadline;
+
             tokio::select! {
                 _ = &mut shutdown => break,
 
@@ -197,16 +208,21 @@ impl UlanziDaemon {
                         }
                     }
 
-                    let mut needs_flush = false;
                     for cmd in commands {
-                        if self.handle_plugin_command(cmd).await {
-                            needs_flush = true;
-                        }
+                        self.handle_plugin_command(cmd).await;
                     }
+                    self.schedule_flush();
+                }
 
-                    if needs_flush {
-                        self.request_flush().await;
+                // Flush deadline reached (debounced)
+                _ = async move {
+                    if let Some(d) = deadline {
+                        sleep_until(d.into()).await;
+                    } else {
+                        std::future::pending::<()>().await;
                     }
+                }, if deadline.is_some() => {
+                    self.perform_flush().await;
                 }
 
                 // Keep‑alive: update small window with current stats
@@ -220,7 +236,7 @@ impl UlanziDaemon {
                             self.cpu_usage,
                             self.mem_usage,
                             &time_str,
-                            0,
+                            self.gpu_usage,
                         ).await {
                             debug!("Failed to send keep-alive to {}: {}", device.get_id(), e);
                         }
@@ -232,17 +248,66 @@ impl UlanziDaemon {
                     self.handle_device_event(&device_id, event).await;
                 }
 
-                // Update telemetry every `stats_interval_ms`
-                _ = telemetry_interval.tick() => {
-                    let (cpu, mem) = self.telemetry.get_metrics();
+                // Update system_monitor every `stats_interval_ms`
+                _ = system_monitor_interval.tick() => {
+                    let (cpu, mem, gpu) = self.system_monitor.get_metrics();
                     self.cpu_usage = cpu;
                     self.mem_usage = mem;
+                    self.gpu_usage = gpu;
+                }
+
+                // Handle cycle command from action
+                Some(()) = self.cycle_rx.recv() => {
+                    self.cycle_small_window().await;
                 }
             }
         }
 
         info!("Shutdown complete.");
         Ok(())
+    }
+
+    /// Schedule a flush after the debounce delay, respecting the minimum interval
+    /// since the last flush.
+    fn schedule_flush(&mut self) {
+        let now = Instant::now();
+        let mut deadline = now + self.debounce_delay;
+        if let Some(last) = self.last_flush_time {
+            let earliest = last + self.min_flush_interval;
+            if deadline < earliest {
+                deadline = earliest;
+            }
+        }
+        self.flush_deadline = Some(deadline);
+    }
+
+    /// Perform the actual flush (send all staged button images to the device).
+    /// Uses a timeout to avoid hanging, and logs errors without crashing.
+    async fn perform_flush(&mut self) {
+        self.flush_deadline = None;
+
+        // Wrap the flush operation in a timeout.
+        let flush_future = async {
+            for device in self.devices.values() {
+                if let Err(e) = device.flush().await {
+                    info!("Failed to flush device {}: {}", device.get_id(), e);
+                    // Continue with other devices (if any) – don't break.
+                }
+            }
+            self.last_flush_time = Some(Instant::now());
+            debug!("Flush completed (or attempted)");
+        };
+
+        match tokio::time::timeout(Duration::from_secs(2), flush_future).await {
+            Ok(_) => {
+                // Flush finished within timeout (success or logged error).
+            }
+            Err(_) => {
+                info!("Flush timed out after 2 seconds – device may be stuck");
+                // Still update last_flush_time to avoid immediate retry storms.
+                self.last_flush_time = Some(Instant::now());
+            }
+        }
     }
 
     async fn handle_device_event(&mut self, device_id: &str, event: ButtonEvent) {
@@ -265,8 +330,7 @@ impl UlanziDaemon {
         }
     }
 
-    async fn handle_plugin_command(&mut self, cmd: BridgeEvent) -> bool {
-        let mut dirty = false;
+    async fn handle_plugin_command(&mut self, cmd: BridgeEvent) {
         match cmd {
             BridgeEvent::SetImage {
                 device_id,
@@ -283,13 +347,12 @@ impl UlanziDaemon {
                     debug!("Setting image for button {} on {}", index, dev.get_id());
                     match dev.set_button_image(index, &image_base64).await {
                         Ok(true) => {
-                            info!(
-                                "SetImage: device={} position={} image_len={}",
+                            debug!(
+                                "SetImage: device={} position={} image_len={} (staged)",
                                 dev.get_id(),
                                 index,
                                 image_base64.len()
                             );
-                            dirty = true;
                         }
                         Ok(false) => {
                             debug!("Image unchanged for button {}, skipping", index);
@@ -311,13 +374,12 @@ impl UlanziDaemon {
                 };
                 if let Some(dev) = dev {
                     let index = position as usize;
-                    info!(
-                        "ClearImage: device={} position={}",
+                    debug!(
+                        "ClearImage: device={} position={} (staged)",
                         dev.get_id(),
                         index
                     );
                     dev.clear_button_image(index);
-                    dirty = true;
                 } else {
                     warn!("ClearImage: No target device found for {}", device_id);
                 }
@@ -341,35 +403,35 @@ impl UlanziDaemon {
             }
             BridgeEvent::DeviceConnected(_) | BridgeEvent::DeviceDisconnected(_) => {}
         }
-        dirty
     }
 
-    /// Request a flush; if one is already in progress, mark pending.
-    async fn request_flush(&mut self) {
-        if self.flush_in_progress {
-            self.pending_flush = true;
-        } else {
-            self.perform_flush().await;
-        }
-    }
+    async fn cycle_small_window(&mut self) {
+        let current = self.config.display_mode;
+        let new_mode = match current {
+            0 => 1, // Status -> Clock
+            1 => 2, // Clock -> Clear
+            2 => 0, // Clear -> Status
+            _ => 0,
+        };
+        self.config.display_mode = new_mode;
+        info!("Small‑window mode cycled: {:?} -> {:?}", current, new_mode);
 
-    /// Perform the actual flush, then handle any pending flush that arrived during it.
-    async fn perform_flush(&mut self) {
-        loop {
-            self.flush_in_progress = true;
-            for device in self.devices.values() {
-                if let Err(e) = device.flush().await {
-                    error!("Failed to flush device {}: {}", device.get_id(), e);
-                }
-            }
-            self.flush_in_progress = false;
-
-            // If a new flush was requested while we were flushing, do it now
-            if self.pending_flush {
-                self.pending_flush = false;
-                // loop back to flush again
-            } else {
-                break;
+        // Convert to u8 for device command
+        let mode_byte = new_mode as u8;
+        let now = chrono::Local::now();
+        let time_str = now.format("%H:%M:%S").to_string();
+        for device in self.devices.values() {
+            if let Err(e) = device
+                .set_small_window_data(
+                    mode_byte,
+                    self.cpu_usage,
+                    self.mem_usage,
+                    &time_str,
+                    self.gpu_usage,
+                )
+                .await
+            {
+                warn!("Failed to update small window after mode cycle: {}", e);
             }
         }
     }
@@ -386,19 +448,24 @@ mod tests {
         let config = Config::default();
         let (_device_input_tx, device_input_rx) = mpsc::channel(1);
         let (device_input_tx_internal, _device_input_rx_internal) = mpsc::channel(1);
+        let (_cycle_tx, cycle_rx) = mpsc::channel(1);
 
         let mut daemon = UlanziDaemon {
             devices: HashMap::new(),
             config,
-            telemetry: SystemMonitor::new(),
+            system_monitor: SystemMonitor::new(),
             cpu_usage: 0,
             mem_usage: 0,
+            gpu_usage: 0,
             plugin_cmd_rx: None,
             hw_event_tx: Some(hw_event_tx),
             device_input_rx,
             device_input_tx: device_input_tx_internal,
-            flush_in_progress: false,
-            pending_flush: false,
+            flush_deadline: None,
+            last_flush_time: None,
+            debounce_delay: Duration::from_millis(50),
+            min_flush_interval: Duration::from_millis(20),
+            cycle_rx,
         };
 
         let event = ButtonEvent {
@@ -424,19 +491,24 @@ mod tests {
         let config = Config::default();
         let (_device_input_tx, device_input_rx) = mpsc::channel(1);
         let (device_input_tx_internal, _device_input_rx_internal) = mpsc::channel(1);
+        let (_cycle_tx, cycle_rx) = mpsc::channel(1);
 
         let mut daemon = UlanziDaemon {
             devices: HashMap::new(),
             config,
-            telemetry: SystemMonitor::new(),
+            system_monitor: SystemMonitor::new(),
             cpu_usage: 0,
             mem_usage: 0,
+            gpu_usage: 0,
             plugin_cmd_rx: None,
             hw_event_tx: Some(hw_event_tx),
             device_input_rx,
             device_input_tx: device_input_tx_internal,
-            flush_in_progress: false,
-            pending_flush: false,
+            flush_deadline: None,
+            last_flush_time: None,
+            debounce_delay: Duration::from_millis(50),
+            min_flush_interval: Duration::from_millis(20),
+            cycle_rx,
         };
 
         let event = ButtonEvent {

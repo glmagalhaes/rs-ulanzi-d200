@@ -1,15 +1,17 @@
 use std::collections::HashMap;
 use std::io::{Cursor, Write};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use async_hid::{AsyncHidWrite, DeviceReader, DeviceWriter, HidBackend};
 use byteorder::{BigEndian, LittleEndian, WriteBytesExt};
 use data_url::DataUrl;
 use futures_util::StreamExt;
-use log::{debug, error, info, warn};
+use log::{debug, info, warn};
+use rand::{rngs, RngExt, distr::Alphanumeric};
+use rand::seq::SliceRandom;
 use serde_json::json;
 use tokio::sync::Mutex as TokioMutex;
 use zip::write::FileOptions;
@@ -32,6 +34,7 @@ pub const NUM_BUTTONS: usize = 14;
 const MAX_COMMAND_PAYLOAD: usize = PACKET_SIZE - 8; // 1016
 
 static FLUSH_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 // ---------------------------------------------------------------------------
 // Command protocol
 // ---------------------------------------------------------------------------
@@ -51,6 +54,7 @@ pub enum CommandProtocol {
 // Button event
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct ButtonEvent {
     pub index: usize,
@@ -227,7 +231,7 @@ impl UlanziDevice {
         let mut new_images = HashMap::new();
         for button in &config.buttons {
             if button.index >= NUM_BUTTONS {
-                info!(
+                debug!(
                     "Config button index {} is out of range (max {}), skipping",
                     button.index,
                     NUM_BUTTONS - 1
@@ -330,23 +334,24 @@ impl UlanziDevice {
     }
 
     /// Send the currently staged button images to the device.
-    /// Retries with a growing dummy file to avoid known hardware bug
-    /// (invalid bytes at specific offsets 1016, 1016+1024, ...).
+    /// Uses unique filenames per flush to force device to reload icons.
+    /// Bounded retries – returns error if a valid ZIP cannot be built.
     pub async fn flush(&self) -> Result<()> {
-        info!("Building button configuration ZIP with bug workaround");
+        debug!("Building button configuration ZIP with bug workaround");
 
-        let flush_id = FLUSH_COUNTER.fetch_add(1, Ordering::Relaxed);
         let images_snapshot = {
             let map = self.button_images.lock().unwrap();
             map.clone()
         };
 
         const INVALID_BYTES: [u8; 2] = [0x00, 0x7c];
+        const MAX_RETRIES: usize = 1000;
 
         let mut dummy_retries = 0;
         let mut zip_data = Vec::new();
 
         loop {
+            let flush_id = FLUSH_COUNTER.fetch_add(1, Ordering::Relaxed);
             zip_data.clear();
             let mut cursor = Cursor::new(Vec::new());
             {
@@ -356,15 +361,22 @@ impl UlanziDevice {
                 let deflated = FileOptions::<()>::default()
                     .compression_method(zip::CompressionMethod::Deflated);
 
-                // 1. dummy.txt – content grows with retries, using a simple repeating pattern
-                let dummy_content = "x".repeat(8 * dummy_retries);
-                zip.start_file("dummy.txt", stored)?;
+                // Dummy file – content grows aggressively
+                // let dummy_content = "x".repeat(128 * dummy_retries);
+                let dummy_content: String = rngs::ThreadRng::default()
+                    .sample_iter(&Alphanumeric)
+                    .take(237 * dummy_retries)
+                    .map(char::from)
+                    .collect();
+
+                zip.start_file("dummy.txt", deflated)?;
                 zip.write_all(dummy_content.as_bytes())?;
 
-                // 2. Icons and manifest (unchanged from your original)
                 let mut manifest = json!({});
 
-                for i in 0..NUM_BUTTONS {
+                let mut numbers: Vec<usize> = (0..NUM_BUTTONS).collect();
+                numbers.shuffle(&mut rngs::ThreadRng::default());
+                for i in numbers {
                     if i == 13 {
                         let key1 = "3_2";
                         let key2 = "4_2";
@@ -404,8 +416,7 @@ impl UlanziDevice {
                 zip.start_file("manifest.json", deflated)?;
                 zip.write_all(serde_json::to_string(&manifest)?.as_bytes())?;
 
-                // 3. sentinel.txt
-                zip.start_file("sentinel.txt", stored)?;
+                zip.start_file("sentinel.txt", deflated)?;
                 zip.write_all(b"")?;
 
                 zip.finish()?;
@@ -413,7 +424,6 @@ impl UlanziDevice {
 
             zip_data = cursor.into_inner();
 
-            // Scan for invalid bytes at offsets 1016, 1016+1024, ...
             let file_size = zip_data.len();
             let mut valid = true;
             for offset in (1016..file_size).step_by(1024) {
@@ -430,20 +440,25 @@ impl UlanziDevice {
             }
 
             if valid {
-                info!("ZIP archive passed the byte‑offset check ({} retries)", dummy_retries);
+                debug!("ZIP archive passed the byte‑offset check ({} retries)", dummy_retries);
                 break;
             }
 
             dummy_retries += 1;
-       }
+            if dummy_retries >= MAX_RETRIES {
+                return Err(anyhow!(
+                    "Failed to build a valid ZIP after {} retries – giving up",
+                    MAX_RETRIES
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
 
-        // Required delay before sending
-        tokio::time::sleep(Duration::from_millis(50)).await;
         self.send_file(&zip_data).await?;
-        info!("Successfully sent button configuration ({} bytes)", zip_data.len());
-
+        debug!("Successfully sent button configuration ({} bytes)", zip_data.len());
         Ok(())
     }
+
     // -- Low‑level packet I/O -----------------------------------------------
 
     async fn send_command(&self, command: CommandProtocol, payload: &[u8]) -> Result<()> {
@@ -461,7 +476,7 @@ impl UlanziDevice {
 
     async fn send_file(&self, data: &[u8]) -> Result<()> {
         let file_size = data.len() as u32;
-        info!("Sending icon data! ({} bytes)", file_size);
+        debug!("Sending icon data! ({} bytes)", file_size);
         let first_chunk = if data.len() >= 1016 {
             &data[..1016]
         } else {

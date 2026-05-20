@@ -1,105 +1,70 @@
+image: rust:latest
+
+cache:
+  paths:
+    - target/
+    - ~/.cargo/registry
+
+variables:
+  CARGO_TERM_COLOR: always
+
 stages:
-  - test
   - build
   - release
 
-variables:
-  CARGO_HOME: $CI_PROJECT_DIR/.cargo
-
-# Use job-specific cache keys to prevent cross-OS cache corruption
-cache:
-  key: "$CI_JOB_NAME-$CI_COMMIT_REF_SLUG"
-  paths:
-    - .cargo/
-    - target/
-
-# Run tests on default runner for all branches/MRs
-test:
-  stage: test
-  image: rust:latest
-  rules:
-    - if: $CI_COMMIT_TAG
-      when: never
-    - when: always
-  before_script:
-    - apt-get update -yq
-  script:
-    - cargo test --verbose
-
-# Base definition for build jobs that only run on beta-release tags
-.build_base:
+# Build job – uses rust image, needs zip and pack.sh
+build_release:
   stage: build
-  allow_failure: true
-  rules:
-    - if: $CI_COMMIT_TAG =~ /^beta-release.*$/
-
-build:linux:amd64:
-  extends: .build_base
   image: rust:latest
-  tags:
-    - saas-linux-small-amd64
-  script:
-    - rustup target add x86_64-unknown-linux-gnu
-    - cargo build --release --target x86_64-unknown-linux-gnu
-  artifacts:
-    paths:
-      - target/x86_64-unknown-linux-gnu/release/rs-ulanzi-d200-linux
-    expire_in: 30 days
-
-build:linux:arm64:
-  extends: .build_base
-  image: rust:latest
-  tags:
-    - saas-linux-small-arm64
-  script:
-    - rustup target add aarch64-unknown-linux-gnu
-    - cargo build --release --target aarch64-unknown-linux-gnu
-  artifacts:
-    paths:
-      - target/aarch64-unknown-linux-gnu/release/rs-ulanzi-d200-linux
-    expire_in: 30 days
-
-build:windows:amd64:
-  extends: .build_base
-  image: rust:latest
-  tags:
-    - saas-linux-small-amd64
   before_script:
-    - apt-get update -yq
-    - apt-get install -y lld clang llvm
+    - apt-get update -qq && apt-get install -y -qq zip
+    - chmod +x pack.sh
   script:
-    - rustup target add x86_64-pc-windows-msvc
-    - cargo install cargo-xwin
-    - cargo xwin build --release --target x86_64-pc-windows-msvc
+    - bash pack.sh release          # explicit bash, no chmod needed if you use bash
+    # or ./pack.sh release (requires chmod already done)
   artifacts:
     paths:
-      - target/x86_64-pc-windows-msvc/release/rs-ulanzi-d200-linux.exe
-    expire_in: 30 days
+      - rs-ulanzi-d200-linux-release.zip
+    expire_in: 1 week
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main" || $CI_COMMIT_TAG
 
-publish-release:
+# Debug build (optional)
+build_debug:
+  stage: build
+  image: rust:latest
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq zip
+    - chmod +x pack.sh
+  script:
+    - bash pack.sh debug
+  artifacts:
+    paths:
+      - rs-ulanzi-d200-linux-debug.zip
+    expire_in: 1 week
+  rules:
+    - if: $CI_MERGE_REQUEST_ID
+    - if: $CI_COMMIT_BRANCH != "main" && $CI_COMMIT_TAG == null
+
+# Release job – uses release-cli (no apt-get/zip needed)
+create_release:
   stage: release
   image: registry.gitlab.com/gitlab-org/release-cli:latest
-  rules:
-    - if: $CI_COMMIT_TAG =~ /^beta-release.*$/
   needs:
-    - job: build:linux:amd64
-      artifacts: true
-    - job: build:linux:arm64
-      artifacts: true
-    - job: build:windows:amd64
-      artifacts: true
+    - build_release
   script:
-    - echo "Creating release for $CI_COMMIT_TAG"
+    - echo "Creating/updating release for tag $CI_COMMIT_TAG"
   release:
-    name: 'Release $CI_COMMIT_TAG'
-    description: 'Automated release for $CI_COMMIT_TAG'
-    tag_name: '$CI_COMMIT_TAG'
-    ref: '$CI_COMMIT_SHA'
+    name: "Release $CI_COMMIT_TAG"
+    description: "Automated release from CI pipeline"
+    tag_name: $CI_COMMIT_TAG
+    # Overwrite if the release already exists
+    ref: $CI_COMMIT_SHA
     assets:
       links:
-        - name: 'Linux x86_64 Binary'
-          url: '${CI_PROJECT_URL}/-/jobs/artifacts/${CI_COMMIT_TAG}/raw/target/x86_64-unknown-linux-gnu/release/rs-ulanzi-d200-linux?job=build:linux:amd64'
-        - name: 'Linux aarch64 Binary'
-          url: '${CI_PROJECT_URL}/-/jobs/artifacts/${CI_COMMIT_TAG}/raw/target/aarch64-unknown-linux-gnu/release/rs-ulanzi-d200-linux?job=build:linux:arm64'
-        - name: 'Windows x86_64 Binary'
-          url: '${CI_PROJECT_URL}/-/jobs/artifacts/${CI_COMMIT_TAG}/raw/target/x86_64-pc-windows-msvc/release/rs-ulanzi-d200-linux.exe?job=build:windows:amd64'
+        - name: "Plugin ZIP"
+          url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/jobs/${CI_JOB_ID}/artifacts/rs-ulanzi-d200-linux-release.zip"
+          link_type: package
+  rules:
+    - if: $CI_COMMIT_TAG
+  # No before_script, no apt-get, no zip – release-cli doesn't need them

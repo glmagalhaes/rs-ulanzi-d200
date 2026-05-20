@@ -4,6 +4,14 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
+
+#[repr(u8)]
+pub enum WindowMode{
+    Status = 0,
+    Clock = 1,
+    Clear = 2, 
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ButtonConfig {
     #[serde(skip)]
@@ -48,8 +56,8 @@ fn default_brightness() -> u8 {
     100
 }
 fn default_display_mode() -> u8 {
-    1
-} // Default to CLOCK
+    return WindowMode::Status as u8;
+}
 fn default_stats_interval() -> u64 {
     1000
 }

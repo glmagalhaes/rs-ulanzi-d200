@@ -7,6 +7,7 @@ use openaction::global_events::{
 use openaction::OpenActionResult;
 use tokio::sync::mpsc;
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub enum BridgeEvent {
     SetImage {
@@ -22,6 +23,7 @@ pub enum BridgeEvent {
         device_id: String,
         brightness: u8,
     },
+    #[allow(dead_code)]
     DeviceConnected(String),
     DeviceDisconnected(String),
 }
