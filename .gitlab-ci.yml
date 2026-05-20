@@ -15,12 +15,13 @@ stages:
 
 before_script:
   - apt-get update -qq && apt-get install -y -qq zip
+  - chmod +x pack.sh
 
 # Build release ZIP (on main branch and tags)
 build_release:
   stage: build
   script:
-    - bash ./pack.sh release
+    - ./pack.sh release
   artifacts:
     paths:
       - rs-ulanzi-d200-linux-release.zip
