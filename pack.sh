@@ -6,7 +6,7 @@ BINARY_NAME="rs-ulanzi-d200-linux"
 MANIFEST_SRC="src/manifest.json"
 ASSETS_SRC="src/assets"
 CONFIG_YAML="config.yaml"
-PLUGIN_FOLDER="io.github.mtesseract.opendeck-ulanzi-d200.sdPlugin"
+PLUGIN_FOLDER="com.gitlab.glmagalhaes.opendeck-ulanzi-d200.sdPlugin"
 
 # ---------- Usage ----------
 if [ $# -ne 1 ]; then
@@ -19,10 +19,10 @@ MODE="$1"
 # ---------- Set paths based on mode ----------
 if [ "$MODE" = "debug" ]; then
     BINARY_PATH="target/debug/$BINARY_NAME"
-    ZIP_NAME="rs-ulanzi-d200-linux-debug.zip"
+    ZIP_NAME="rs-ulanzi-d200-debug.zip"
 elif [ "$MODE" = "release" ]; then
     BINARY_PATH="target/release/$BINARY_NAME"
-    ZIP_NAME="rs-ulanzi-d200-linux-release.zip"
+    ZIP_NAME="rs-ulanzi-d200-release.zip"
 else
     echo "Invalid mode: $MODE (use 'debug' or 'release')"
     exit 1
