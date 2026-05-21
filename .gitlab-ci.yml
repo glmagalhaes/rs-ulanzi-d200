@@ -23,7 +23,7 @@ build_release:
     - bash pack.sh release
   artifacts:
     paths:
-      - rs-ulanzi-d200-linux-release.zip
+      - rs-ulanzi-d200-release.zip
     expire_in: 1 week
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
@@ -40,7 +40,7 @@ build_debug:
     - bash pack.sh debug
   artifacts:
     paths:
-      - rs-ulanzi-d200-linux-debug.zip
+      - rs-ulanzi-d200-debug.zip
     expire_in: 1 week
   rules:
     - if: $CI_MERGE_REQUEST_ID
