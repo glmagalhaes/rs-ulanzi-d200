@@ -7,8 +7,10 @@ use tokio::signal;
 use tokio::sync::mpsc;
 use tokio::time::{interval, sleep_until};
 
+use crate::config::WINDOW_MODE_STATUS;
+use crate::config::WINDOW_MODE_CLOCK;
+use crate::config::WINDOW_MODE_CLEAR;
 use crate::config::Config;
-use crate::config::WindowMode;
 use crate::device::{ButtonEvent, UlanziDevice};
 use crate::openaction_client::BridgeEvent;
 use crate::system_monitor::SystemMonitor;
@@ -408,10 +410,10 @@ impl UlanziDaemon {
     async fn cycle_small_window(&mut self) {
         let current = self.config.display_mode;
         let new_mode = match current {
-            0 => 1, // Status -> Clock
-            1 => 2, // Clock -> Clear
-            2 => 0, // Clear -> Status
-            _ => 0,
+            WINDOW_MODE_STATUS => WINDOW_MODE_CLOCK, // Status -> Clock
+            WINDOW_MODE_CLOCK => WINDOW_MODE_CLEAR, // Clock -> Clear
+            WINDOW_MODE_CLEAR => WINDOW_MODE_STATUS, // Clear -> Status
+            _ => WINDOW_MODE_STATUS,
         };
         self.config.display_mode = new_mode;
         info!("Small‑window mode cycled: {:?} -> {:?}", current, new_mode);

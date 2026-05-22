@@ -5,12 +5,9 @@ use std::fs;
 use std::path::Path;
 
 
-#[repr(u8)]
-pub enum WindowMode{
-    Status = 0,
-    Clock = 1,
-    Clear = 2, 
-}
+pub const WINDOW_MODE_STATUS: u8 = 0;
+pub const WINDOW_MODE_CLOCK: u8 = 1;
+pub const WINDOW_MODE_CLEAR: u8 = 2;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ButtonConfig {
@@ -56,7 +53,7 @@ fn default_brightness() -> u8 {
     100
 }
 fn default_display_mode() -> u8 {
-    return WindowMode::Status as u8;
+    return WINDOW_MODE_STATUS as u8;
 }
 fn default_stats_interval() -> u64 {
     1000
