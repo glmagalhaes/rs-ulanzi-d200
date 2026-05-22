@@ -25,6 +25,11 @@ sysinfo = "0.39.2"
 image = { version = "0.25.9", features = ["jpeg"] }
 data-url = "0.3"
 openaction = "2.6.0"
+nvml-wrapper = { version = "0.12.1", optional = true }
+
+[features]
+default = ["nvidia"]
+nvidia = ["dep:nvml-wrapper"]
 
 [target.'cfg(windows)'.dependencies]
 async-hid = { version = "0.4.4", default-features = false, features = ["tokio", "win32"] }
