@@ -8,7 +8,6 @@ mod action;
 use anyhow::Result;
 use clap::Parser;
 use log::{error, info, warn};
-use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use openaction::*;
 use tokio::sync::mpsc;
@@ -47,31 +46,6 @@ struct Args {
     /// Stream Deck / OpenDeck Registration: Info
     #[arg(long = "info", hide = true)]
     info: Option<String>,
-}
-
-#[derive(Serialize, Deserialize, Clone, Default)]
-#[serde(default)]
-struct CycleStatusWindowSettings {
-    current: u8,
-}
-
-struct CycleStatusWindow {
-    cycle_tx: mpsc::Sender<()>,
-}
-
-#[async_trait]
-impl Action for CycleStatusWindow {
-    const UUID: ActionUuid = "com.gitlab.glmagalhaes.opendeck-ulanzi-d200.cycle";
-    type Settings = CycleStatusWindowSettings;
-
-    async fn key_up(&self, _instance: &Instance, _settings: &Self::Settings) -> OpenActionResult<()> {
-        info!("Cycling display mode");
-        let _ = self.cycle_tx.send(()).await;
-        Ok(())
-    }
-    async fn will_appear(&self, _: &Instance, _: &Self::Settings) -> OpenActionResult<()> {
-		Ok(())
-	}
 }
 
 #[tokio::main]
