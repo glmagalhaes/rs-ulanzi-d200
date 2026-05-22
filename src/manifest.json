@@ -6,7 +6,7 @@
   "PluginUUID": "com.gitlab.glmagalhaes.opendeck-ulanzi-d200",
   "CodePathLin": "rs-ulanzi-d200-linux",
   "Icon": "assets/icon",
-  "Category": "Hardware",
+  "Category": "Ulanzi D200(H)",
   "OS": [
     { "Platform": "linux" }
   ],
