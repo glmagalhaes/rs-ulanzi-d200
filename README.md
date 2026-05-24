@@ -71,7 +71,13 @@ sh pack.sh release
 
 ## Known issues
 
-There is at least one and will be lested soonish
+### Streched Icon on Wide button
+
+OpenDeck currently only supports a grid of square buttons (e.g., 5×3). The Ulanzi D200 has a wide button that spans two columns. Because OpenDeck treats every cell as an independent square, the icon assigned to that button appears stretched horizontally.
+
+### Extra empty button
+
+Since OpenDeck’s grid is always rectangular, the plugin must define a fixed number of rows and columns. On the D200, this creates a “ghost” button in the bottom‑right position (row 3, column 5) that does not exist on the physical device. This button is non‑functional and can be ignored, or you can just store an spare action there ¯\\_(ツ)_/¯.
 
 ---
 
@@ -81,9 +87,9 @@ The road map is really short because the plug-in is already working withou any p
 
 ### v0.6.3
 - [x] Support for GPU load in status window #8
-- [ ] Better organization in code
+- [x] Better organization in code
 - [x] Change in plugin namming, internal and external #11
-- [ ] Stability updates
+- [x] Stability updates
 - [ ] Launch on OpenDeck Store #10
 
 ### v1.0.0
