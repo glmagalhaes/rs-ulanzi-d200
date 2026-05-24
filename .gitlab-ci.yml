@@ -2,6 +2,14 @@ stages:
   - build
   - release
 
+# Only create pipelines for main branch, tags, and merge requests
+workflow:
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_TAG
+    - if: $CI_MERGE_REQUEST_ID
+    - when: never
+
 variables:
   CARGO_TERM_COLOR: always
   CARGO_HOME: ${CI_PROJECT_DIR}/.cargo   # Keep cargo cache inside the project
@@ -12,7 +20,7 @@ cache:
     - target/
     - .cargo/registry/                   # Relative path, always present after build
 
-# Build the release ZIP
+# Build the release ZIP (for main branch or tags)
 build_release:
   stage: build
   image: rust:latest
@@ -29,7 +37,7 @@ build_release:
     - if: $CI_COMMIT_BRANCH == "main"
     - if: $CI_COMMIT_TAG
 
-# Debug build (optional)
+# Debug build (only for merge requests)
 build_debug:
   stage: build
   image: rust:latest
@@ -44,9 +52,8 @@ build_debug:
     expire_in: 1 week
   rules:
     - if: $CI_MERGE_REQUEST_ID
-    - if: $CI_COMMIT_BRANCH != "main" && $CI_COMMIT_TAG == null
 
-# Create a GitLab Release and attach the plugin ZIP as an asset
+# Create a GitLab Release and attach the plugin ZIP as an asset (only for tags)
 create_release:
   stage: release
   image: registry.gitlab.com/gitlab-org/release-cli:latest
