@@ -1,18 +1,18 @@
 {
-  "Name": "Ulanzi D200(H)",
+  "Name": "Ulanzi D200",
   "Description": "Device support plugin for the Ulanzi Stream Controller D200 and D200H",
   "Author": "glmagalhaes, mquest, mtesseract",
-  "Version": "0.6.2",
-  "PluginUUID": "com.gitlab.glmagalhaes.opendeck-ulanzi-d200",
+  "Version": "0.6.3",
+  "PluginUUID": "com.glmagalhaes.ulanzi",
   "CodePathLin": "rs-ulanzi-d200-linux",
   "Icon": "assets/icon",
-  "Category": "Ulanzi D200(H)",
+  "Category": "Ulanzi D200",
   "OS": [
     { "Platform": "linux" }
   ],
   "Actions": [
     {
-      "UUID": "com.gitlab.glmagalhaes.opendeck-ulanzi-d200.cycle",
+      "UUID": "com.glmagalhaes.ulanzi.cycle",
       "Name": "Screen Switch",
       "Icon": "assets/cycle",
       "Tooltip": "Switch modes of the status screen.",
