@@ -1,56 +1,71 @@
-# OpenDeck Ulanzi D200 Driver
+# OpenDeck Ulanzi D200 Driver (Unofficial)
 
-An unofficial plugin for the Ulanzi D200 family
+An unofficial plugin for [OpenDeck](https://github.com/nekename/OpenDeck) that adds support for the Ulanzi D200 and D200H devices.
 
-The ulanzi D200H is the same hardware as the D200 with 2 added USB hubs Genesys Logic, Inc. Hub (05e3:0610)
+> **Note**: This project is mirrored on GitHub for visibility, but the official source is on [GitLab](https://gitlab.com/glmagalhaes.mail/rs-ulanzi-d-200-linux). Please open issues there.
 
-If you have any problem related to the connection to the device or if the device is not rendering correctly you can open an issue on the [GitLab](https://gitlab.com/glmagalhaes.mail/rs-ulanzi-d-200-linux).
+---
 
-If you are in the Github project, this is only a mirror.
-
-## Supported devices
+## Supported Devices
 
 - Ulanzi D200
-- Ulanzi D200H (2207:0019)
+- Ulanzi D200H (USB ID `2207:0019`)
 
-## Platform support
+The D200H is identical to the D200 but includes two additional USB hubs (Genesys Logic, Inc., `05e3:0610`).
 
-There are more supported platforms in the roadmap and you can help if you want.
+---
 
-Currently only the following platforms are supported:
+## Platform Support
 
-- Linux: Working and being currently development for
+| Platform | Status |
+|----------|--------|
+| Linux    | ✅ Supported (actively developed and tested) |
+| Windows  | ❌ Planned (see roadmap) |
+| macOS    | ❌ Planned (see roadmap) |
+
+If you would like to help port the plugin to another platform, feel free to contribute!
+
+---
 
 ## Installation
 
-Download an archive from releases.
+1. Download the latest file from the [releases page](https://gitlab.com/glmagalhaes.mail/rs-ulanzi-d-200-linux/-/releases).
+2. In OpenDeck, go to **Plugins → Install from file** and select the archive.
+3. The plugin will appear in your plugin list.
 
-In OpenDeck: Plugins -> Install from file
+> The plugin will be available via the OpenDeck Store in a future release.
 
-Soon it will be available on OpenDeck Store.
-
+---
 
 ## Actions
 
-This plugin has an action that is for a native funcionality from both D200 and D200H. The wide button has 3 functions, blank, clock and PC stat. This doesn't affect the functionality as a button, it just show one of those 3 informations.
+### Screen Switch
 
- - Screen Switch:  This will cycle between the 3 modes on click.
+Cycles the built‑in status display of the wide button through three modes:
 
-## Building
+- **Blank** – it will show empty or the icon of your choice
+- **Clock** – show current time
+- **PC stats** – displays CPU, RAM, and GPU load (GPU support added in v0.6.3)
 
-You'll need rust and cargo to build this project:
+This action does **not** affect the button’s ability to send key presses. It only changes the visual information shown on the device’s screen.
 
-#### Debug Version
+---
+
+## Building from Source
+
+Requirements: Rust, Cargo, and standard build tools (e.g., `git`, `make`).
+
+The repository includes a `pack.sh` script that compiles the plugin and packages it as a `.zip` file.
 
 ```sh
-$ sh pack.sh
+# Debug build (output in target/debug/)
+sh pack.sh
+
+# Release build (optimized, output in target/release/)
+sh pack.sh release
 ```
 
-#### Release Version
-
-```sh
-$ sh pack.sh release 
-```
+> **Note**: The script assumes a typical Rust environment. If you encounter issues, ensure cargo is in your $PATH.
 
 ## Road Map
 
@@ -64,11 +79,21 @@ The road map is really short because the plug-in is already working withou any p
 - [ ] Launch on OpenDeck Store #10
 
 ### v1.0.0
-- [ ] Being tested by more people
+- [ ] Community testing phase completed
 - [ ] Better icon for the Screen Switch action
-- [x] Better naming for actions and categories
+- [x] Better naming for actions and categories (completed in v0.6.3)
 - [ ] Stability updates
 
-### Sometime in the future
+### Future (help wanted)
 - [ ] Support for macOS
 - [ ] Support for Windows
+
+## Contributing
+
+Contributions are welcome! Please:
+
+- Use the [GitLab](https://gitlab.com/glmagalhaes.mail/rs-ulanzi-d-200-linux) repository (the GitHub mirror is read‑only).
+- Open an issue first to discuss major changes.
+
+## License
+This project is licensed under the GNU Affero General Public License v3.0 – see the LICENSE file for details.
