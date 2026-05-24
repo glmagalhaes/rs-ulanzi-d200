@@ -85,13 +85,6 @@ Since OpenDeck’s grid is always rectangular, the plugin must define a fixed nu
 
 The road map is really short because the plug-in is already working withou any problems and all the main features are already done
 
-### v0.6.3
-- [x] Support for GPU load in status window #8
-- [x] Better organization in code
-- [x] Change in plugin namming, internal and external #11
-- [x] Stability updates
-- [ ] Launch on OpenDeck Store #10
-
 ### v1.0.0
 - [ ] Community testing phase completed
 - [ ] Better icon for the Screen Switch action
