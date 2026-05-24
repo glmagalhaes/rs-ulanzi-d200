@@ -1,6 +1,8 @@
-# OpenDeck Ulanzi D200(H) Driver
+# OpenDeck Ulanzi D200 Driver
 
 An unofficial plugin for the Ulanzi D200 family
+
+The ulanzi D200H is the same hardware as the D200 with 2 added USB hubs Genesys Logic, Inc. Hub (05e3:0610)
 
 If you have any problem related to the connection to the device or if the device is not rendering correctly you can open an issue on the [GitLab](https://gitlab.com/glmagalhaes.mail/rs-ulanzi-d-200-linux).
 
@@ -9,7 +11,7 @@ If you are in the Github project, this is only a mirror.
 ## Supported devices
 
 - Ulanzi D200
-- Ulanzi D200H
+- Ulanzi D200H (2207:0019)
 
 ## Platform support
 
