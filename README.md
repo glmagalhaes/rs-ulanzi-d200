@@ -71,7 +71,7 @@ sh pack.sh release
 
 ## Known issues
 
-
+There is at least one and will be lested soonish
 
 ---
 
