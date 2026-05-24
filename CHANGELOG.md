@@ -1,3 +1,9 @@
+# 0.6.3
+* Support for GPU load in status window #8 (closed)
+* Better organization in code
+* Change in plugin namming, internal and external #11 (closed)
+* Launch on OpenDeck Store #10
+
 # 0.6.2
  * Mapped all the possible screens that the status window has
  * Added an action to witch cycle what's shown on status window

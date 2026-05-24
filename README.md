@@ -8,7 +8,7 @@ An unofficial plugin for [OpenDeck](https://github.com/nekename/OpenDeck) that a
 
 ## Supported Devices
 
-- Ulanzi D200
+- Ulanzi D200 (USB ID `2207:0019`)
 - Ulanzi D200H (USB ID `2207:0019`)
 
 The D200H is identical to the D200 but includes two additional USB hubs (Genesys Logic, Inc., `05e3:0610`).
@@ -84,13 +84,6 @@ Since OpenDeck’s grid is always rectangular, the plugin must define a fixed nu
 ## Road Map
 
 The road map is really short because the plug-in is already working withou any problems and all the main features are already done
-
-### v0.6.3
-- [x] Support for GPU load in status window #8
-- [x] Better organization in code
-- [x] Change in plugin namming, internal and external #11
-- [x] Stability updates
-- [ ] Launch on OpenDeck Store #10
 
 ### v1.0.0
 - [ ] Community testing phase completed
