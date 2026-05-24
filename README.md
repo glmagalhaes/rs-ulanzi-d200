@@ -8,7 +8,7 @@ An unofficial plugin for [OpenDeck](https://github.com/nekename/OpenDeck) that a
 
 ## Supported Devices
 
-- Ulanzi D200
+- Ulanzi D200 (USB ID `2207:0019`)
 - Ulanzi D200H (USB ID `2207:0019`)
 
 The D200H is identical to the D200 but includes two additional USB hubs (Genesys Logic, Inc., `05e3:0610`).
