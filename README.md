@@ -67,6 +67,14 @@ sh pack.sh release
 
 > **Note**: The script assumes a typical Rust environment. If you encounter issues, ensure cargo is in your $PATH.
 
+---
+
+## Known issues
+
+
+
+---
+
 ## Road Map
 
 The road map is really short because the plug-in is already working withou any problems and all the main features are already done
