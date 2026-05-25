@@ -45,7 +45,7 @@ Cycles the built‑in status display of the wide button through three modes:
 
 - **Blank** – it will show empty or the icon of your choice
 - **Clock** – show current time
-- **PC stats** – displays CPU, RAM, and GPU load (GPU support added in v0.6.3)
+- **PC stats** – displays CPU, RAM, and GPU load
 
 This action does **not** affect the button’s ability to send key presses. It only changes the visual information shown on the device’s screen.
 
@@ -88,7 +88,6 @@ The road map is really short because the plug-in is already working withou any p
 ### v1.0.0
 - [ ] Community testing phase completed
 - [ ] Better icon for the Screen Switch action
-- [x] Better naming for actions and categories (completed in v0.6.3)
 - [ ] Stability updates
 
 ### Future (help wanted)

@@ -6,7 +6,7 @@ BINARY_NAME="rs-ulanzi-d200-linux"
 MANIFEST_SRC="src/manifest.json"
 ASSETS_SRC="src/assets"
 CONFIG_YAML="config.yaml"
-PLUGIN_FOLDER="com.glmagalhaes.ulanzi-d200.sdPlugin"
+PLUGIN_FOLDER="com.glmagalhaes.ulanzi.d200.sdPlugin"
 
 # ---------- Usage ----------
 if [ $# -ne 1 ]; then
@@ -22,7 +22,7 @@ if [ "$MODE" = "debug" ]; then
     ZIP_NAME="rs-ulanzi-d200-debug.zip"
 elif [ "$MODE" = "release" ]; then
     BINARY_PATH="target/release/$BINARY_NAME"
-    ZIP_NAME="com.glmagalhaes.ulanzi.zip"
+    ZIP_NAME="com.glmagalhaes.ulanzi.d200.zip"
 else
     echo "Invalid mode: $MODE (use 'debug' or 'release')"
     exit 1
