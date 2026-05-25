@@ -1,3 +1,7 @@
+# 0.6.4
+* change reverse domain to com.glmagalhaes.ulanzi.d200, added the supported device that was missing
+* this name will be final for automatic updates in the future
+
 # 0.6.3
 * Support for GPU load in status window #8 (closed)
 * Better organization in code
