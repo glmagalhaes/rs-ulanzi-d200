@@ -31,7 +31,7 @@ build_release:
     - bash pack.sh release
   artifacts:
     paths:
-      - com.glmagalhaes.ulanzi.zip
+      - com.glmagalhaes.ulanzi.d200.zip
     expire_in: 1 week
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
@@ -68,6 +68,6 @@ create_release:
     assets:
       links:
         - name: 'Plugin ZIP'
-          url: '${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/jobs/artifacts/${CI_COMMIT_REF_NAME}/raw/com.glmagalhaes.ulanzi.zip?job=build_release'
+          url: '${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/jobs/artifacts/${CI_COMMIT_REF_NAME}/raw/com.glmagalhaes.ulanzi.d200.zip?job=build_release'
   rules:
     - if: $CI_COMMIT_TAG
