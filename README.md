@@ -33,7 +33,7 @@ If you would like to help port the plugin to another platform, feel free to cont
 2. In OpenDeck, go to **Plugins → Install from file** and select the archive.
 3. The plugin will appear in your plugin list.
 
-> The plugin will be available via the OpenDeck Store in a future release.
+> The plugin is also available via the OpenDeck's [OpenAction Marketplace](https://marketplace.tacto.live/plugin/com.glmagalhaes.ulanzi.d200).
 
 ---
 
@@ -88,6 +88,7 @@ The road map is really short because the plug-in is already working withou any p
 ### v1.0.0
 - [ ] Community testing phase completed
 - [ ] Better icon for the Screen Switch action
+- [ ] Saving status window state from previous sessions #14
 - [ ] Stability updates
 
 ### Future (help wanted)
