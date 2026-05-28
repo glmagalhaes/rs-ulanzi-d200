@@ -35,6 +35,8 @@ pub struct Config {
     pub display_mode: u8,
     #[serde(default = "default_stats_interval")]
     pub stats_interval_ms: u64,
+    #[serde(skip)]
+    pub filepath: Option<std::path::PathBuf>,
 }
 
 impl Default for Config {
@@ -45,6 +47,7 @@ impl Default for Config {
             buttons: Vec::new(),
             display_mode: default_display_mode(),
             stats_interval_ms: default_stats_interval(),
+            filepath: None,
         }
     }
 }
@@ -96,6 +99,18 @@ impl Config {
             }
         }
 
+        config.filepath = Some(path.to_path_buf());
+
         Ok(config)
+    }
+
+    pub fn save(&self) -> Result<()> {
+        if let Some(ref path) = self.filepath {
+            let content = serde_yaml::to_string(self)
+                .with_context(|| "Failed to serialize config")?;
+            fs::write(path, content)
+                .with_context(|| format!("Failed to write config file: {:?}", path))?;
+        }
+        Ok(())
     }
 }

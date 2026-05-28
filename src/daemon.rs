@@ -416,6 +416,9 @@ impl UlanziDaemon {
             _ => WINDOW_MODE_STATUS,
         };
         self.config.display_mode = new_mode;
+        if let Err(e) = self.config.save() {
+            warn!("Failed to save config: {}", e);
+        }
         info!("Small‑window mode cycled: {:?} -> {:?}", current, new_mode);
 
         // Convert to u8 for device command
