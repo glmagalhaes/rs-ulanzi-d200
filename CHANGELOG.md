@@ -1,3 +1,9 @@
+# 0.6.5
+* Saving status window state from previous sessions #14
+* Remove remaining code from stand alone daemon
+* Cleaning config.yaml
+* Stability/Security updates on rust and libraries
+
 # 0.6.4
 * Change reverse domain to com.glmagalhaes.ulanzi.d200, added the supported device that was missing
 * This name will be final for automatic updates in the future

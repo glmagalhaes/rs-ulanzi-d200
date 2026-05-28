@@ -2,7 +2,7 @@
   "Name": "Ulanzi D200",
   "Description": "Device support plugin for the Ulanzi Stream Controller D200 and D200H",
   "Author": "glmagalhaes, mquest, mtesseract",
-  "Version": "0.6.4",
+  "Version": "0.6.5",
   "PluginUUID": "com.glmagalhaes.ulanzi.d200",
   "CodePathLin": "rs-ulanzi-d200-linux",
   "Icon": "assets/icon",

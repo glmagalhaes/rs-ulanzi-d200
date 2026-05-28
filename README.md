@@ -88,7 +88,7 @@ The road map is really short because the plug-in is already working withou any p
 ### v1.0.0
 - [ ] Community testing phase completed
 - [ ] Better icon for the Screen Switch action
-- [ ] Saving status window state from previous sessions #14
+- [x] Saving status window state from previous sessions #14 (Implemented on 0.6.5)
 - [ ] Stability updates
 
 ### Future (help wanted)
