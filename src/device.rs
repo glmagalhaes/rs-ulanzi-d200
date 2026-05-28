@@ -226,40 +226,7 @@ impl UlanziDevice {
         Ok(())
     }
 
-    /// Replace **all** button images from a configuration, then send to device immediately.
-    pub async fn set_buttons(&self, config: &crate::config::Config) -> Result<()> {
-        let mut new_images = HashMap::new();
-        for button in &config.buttons {
-            if button.index >= NUM_BUTTONS {
-                debug!(
-                    "Config button index {} is out of range (max {}), skipping",
-                    button.index,
-                    NUM_BUTTONS - 1
-                );
-                continue;
-            }
-            if let Some(ref img_path) = button.image {
-                let path = std::path::Path::new(img_path);
-                if path.exists() {
-                    if let Ok(img) = image::open(path) {
-                        let resized = resize_square(&img, 196);
-                        let mut png_data = Vec::new();
-                        {
-                            let mut cursor = std::io::Cursor::new(&mut png_data);
-                            resized.write_to(&mut cursor, image::ImageFormat::Png)?;
-                        }
-                        new_images.insert(button.index, png_data);
-                    } else {
-                        info!("Failed to open image at {}", img_path);
-                    }
-                } else {
-                    info!("Image path {} does not exist", img_path);
-                }
-            }
-        }
-        *self.button_images.lock().unwrap() = new_images;
-        self.flush().await
-    }
+
 
     /// Stage a button image from a data URL (Base64) or a file path.
     /// Returns `Ok(true)` if the image was new/different, `Ok(false)` if unchanged.
