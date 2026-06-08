@@ -1,6 +1,4 @@
-<div align="center">
-    <img src="src/assets/icon.png" />
-</div>
+![OpenDeck Ulanzi D200 Driver Logo](src/assets/icon.png)
 
 # OpenDeck Ulanzi D200 Driver (Unofficial)
 
