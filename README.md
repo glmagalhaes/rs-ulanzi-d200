@@ -1,3 +1,7 @@
+<div align="center">
+    <img src="src/assets/icon.png" />
+</div>
+
 # OpenDeck Ulanzi D200 Driver (Unofficial)
 
 An unofficial plugin for [OpenDeck](https://github.com/nekename/OpenDeck) that adds support for the Ulanzi D200 and D200H devices.
