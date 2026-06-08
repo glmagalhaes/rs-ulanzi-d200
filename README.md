@@ -3,6 +3,8 @@
 An unofficial plugin for [OpenDeck](https://github.com/nekename/OpenDeck) that adds support for the Ulanzi D200 and D200H devices.
 
 > **Note**: This project is mirrored on GitHub for visibility, but the official source is on [GitLab](https://gitlab.com/glmagalhaes.mail/rs-ulanzi-d-200-linux). Please open issues there.
+>
+> **Recommendation:** For best compatibility, update your device firmware using the official **Ulanzi Studio** (available for macOS and Windows).
 
 ---
 
@@ -71,7 +73,7 @@ sh pack.sh release
 
 ## Known issues
 
-### Streched Icon on Wide button
+### Stretched Icon on Wide button
 
 OpenDeck currently only supports a grid of square buttons (e.g., 5×3). The Ulanzi D200 has a wide button that spans two columns. Because OpenDeck treats every cell as an independent square, the icon assigned to that button appears stretched horizontally.
 
@@ -79,11 +81,17 @@ OpenDeck currently only supports a grid of square buttons (e.g., 5×3). The Ulan
 
 Since OpenDeck’s grid is always rectangular, the plugin must define a fixed number of rows and columns. On the D200, this creates a “ghost” button in the bottom‑right position (row 3, column 5) that does not exist on the physical device. This button is non‑functional and can be ignored, or you can just store an spare action there ¯\\_(ツ)_/¯.
 
+
+### Wide button not working
+
+If the wide button does not register key presses correctly, the device firmware might be outdated.
+Update the firmware using **Ulanzi Studio** (available for macOS and Windows) – this is the only official method provided by Ulanzi. After updating, the button should function correctly with the plugin.
+
 ---
 
 ## Road Map
 
-The road map is really short because the plug-in is already working withou any problems and all the main features are already done
+The road map is really short because the plug-in is already working without any problems and all the main features are already done
 
 ### v1.0.0
 - [ ] Community testing phase completed
