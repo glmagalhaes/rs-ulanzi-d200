@@ -145,26 +145,6 @@ dependencies = [
 
 [[package]]
 name = "async-hid"
-version = "0.4.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aab637ea12169f6c473eaed9fe56843490146e3d431dbe408ca86d92edf79c2e"
-dependencies = [
- "atomic-waker",
- "block2",
- "crossbeam-queue",
- "dispatch2",
- "futures-lite",
- "log",
- "nix",
- "objc2-core-foundation",
- "objc2-io-kit",
- "static_assertions",
- "tokio",
- "windows 0.61.3",
-]
-
-[[package]]
-name = "async-hid"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "69e70a2c939b6c214ac83665d66aa8de5f5ecda851cd589f2aa71904822963ab"
@@ -2030,11 +2010,10 @@ checksum = "47b34b781b31e5d73e9fbc8689c70551fd1ade9a19e3e28cfec8580a79290cc4"
 
 [[package]]
 name = "rs-ulanzi-d200-linux"
-version = "0.6.4"
+version = "0.6.5"
 dependencies = [
  "anyhow",
- "async-hid 0.4.4",
- "async-hid 0.5.1",
+ "async-hid",
  "async-trait",
  "byteorder",
  "chrono",

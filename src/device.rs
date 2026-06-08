@@ -332,25 +332,25 @@ impl UlanziDevice {
                 // let dummy_content = "x".repeat(128 * dummy_retries);
                 let dummy_content: String = rngs::ThreadRng::default()
                     .sample_iter(&Alphanumeric)
-                    .take(237 * dummy_retries)
+                    .take(1024 * dummy_retries)
                     .map(char::from)
                     .collect();
 
-                zip.start_file("dummy.txt", deflated)?;
+                zip.start_file("dummy.txt", stored)?;
                 zip.write_all(dummy_content.as_bytes())?;
 
                 let mut manifest = json!({});
 
                 let mut numbers: Vec<usize> = (0..NUM_BUTTONS).collect();
                 numbers.shuffle(&mut rngs::ThreadRng::default());
-                for i in numbers {
-                    if i == 13 {
+                for (index, value) in numbers.into_iter().enumerate() {
+                    if value == 13 {
                         let key1 = "3_2";
                         let key2 = "4_2";
                         let mut view_param = json!({ "Text": "" });
 
                         if let Some(img_data) = images_snapshot.get(&13) {
-                            let icon_name = format!("{}_{}.png", i, flush_id);
+                            let icon_name = format!("{}_{}_{}.png", index, value, flush_id);
                             zip.start_file(format!("icons/{}", icon_name), deflated)?;
                             zip.write_all(img_data)?;
                             view_param["Icon"] = json!(format!("icons/{}", icon_name));
@@ -362,13 +362,13 @@ impl UlanziDevice {
                         manifest[key1] = entry.clone();
                         manifest[key2] = entry;
                     } else {
-                        let col = i % 5;
-                        let row = i / 5;
+                        let col = value % 5;
+                        let row = value / 5;
                         let key = format!("{}_{}", col, row);
                         let mut view_param = json!({ "Text": "" });
 
-                        if let Some(img_data) = images_snapshot.get(&i) {
-                            let icon_name = format!("{}_{}.png", i, flush_id);
+                        if let Some(img_data) = images_snapshot.get(&value) {
+                            let icon_name = format!("{}_{}_{}.png", index, value, flush_id);
                             zip.start_file(format!("icons/{}", icon_name), deflated)?;
                             zip.write_all(img_data)?;
                             view_param["Icon"] = json!(format!("icons/{}", icon_name));
