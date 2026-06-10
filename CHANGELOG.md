@@ -1,3 +1,8 @@
+# 0.6.6
+* Rewrote icon sending to follow the device's native protocol (captured from the official app)
+* Full layout is now sent once via command 0x0001; per-button changes use incremental updates via command 0x000d
+* Clean configuration ZIP (Images/<id>.png + manifest.json) — removed the random dummy padding, byte-offset retries and button shuffling workarounds
+
 # 0.6.5
 * Saving status window state from previous sessions #14
 * Remove remaining code from stand alone daemon

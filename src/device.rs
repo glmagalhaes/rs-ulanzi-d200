@@ -1,8 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{Cursor, Write};
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use async_hid::{AsyncHidWrite, DeviceReader, DeviceWriter, HidBackend};
@@ -11,7 +9,6 @@ use data_url::DataUrl;
 use futures_util::StreamExt;
 use log::{debug, info, warn};
 use rand::{rngs, RngExt, distr::Alphanumeric};
-use rand::seq::SliceRandom;
 use serde_json::json;
 use tokio::sync::Mutex as TokioMutex;
 use zip::write::FileOptions;
@@ -33,8 +30,6 @@ pub const NUM_BUTTONS: usize = 14;
 
 const MAX_COMMAND_PAYLOAD: usize = PACKET_SIZE - 8; // 1016
 
-static FLUSH_COUNTER: AtomicU64 = AtomicU64::new(0);
-
 // ---------------------------------------------------------------------------
 // Command protocol
 // ---------------------------------------------------------------------------
@@ -44,6 +39,7 @@ static FLUSH_COUNTER: AtomicU64 = AtomicU64::new(0);
 pub enum CommandProtocol {
     OutSetButtons = 0x0001,
     OutSetSmallWindowData = 0x0006,
+    OutSetButtonIcon = 0x000d,
     OutSetBrightness = 0x000a,
     OutSetLabelStyle = 0x000b,
     InButton = 0x0101,
@@ -70,7 +66,14 @@ pub struct UlanziDevice {
     writer: Arc<TokioMutex<DeviceWriter>>,
     reader: Option<DeviceReader>,
     id: String,
+    /// Staged button images keyed by button index. Represents the desired
+    /// on-device state; mutated by `set_button_image` / `clear_button_image`.
     button_images: Mutex<HashMap<usize, Vec<u8>>>,
+    /// Button indices that changed since the last successful device sync.
+    dirty: Mutex<HashSet<usize>>,
+    /// Whether a full layout (`OutSetButtons`) has been pushed to the device.
+    /// While `false`, the next `flush()` performs a full resync.
+    synced: Mutex<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -147,6 +150,8 @@ impl UlanziDevice {
             reader: Some(reader),
             id,
             button_images: Mutex::new(HashMap::new()),
+            dirty: Mutex::new(HashSet::new()),
+            synced: Mutex::new(false),
         })
     }
 
@@ -271,14 +276,20 @@ impl UlanziDevice {
             buf
         };
 
-        let mut map = self.button_images.lock().unwrap();
-        let changed = match map.get(&index) {
-            Some(old) => *old != png_data,
-            None => true,
+        let changed = {
+            let mut map = self.button_images.lock().unwrap();
+            let changed = match map.get(&index) {
+                Some(old) => *old != png_data,
+                None => true,
+            };
+            if changed {
+                map.insert(index, png_data);
+            }
+            changed
         };
 
         if changed {
-            map.insert(index, png_data);
+            self.dirty.lock().unwrap().insert(index);
         }
 
         Ok(changed)
@@ -290,139 +301,153 @@ impl UlanziDevice {
             warn!("Attempt to clear out‑of‑range button index {}", index);
             return;
         }
-        self.button_images.lock().unwrap().remove(&index);
+        let removed = self.button_images.lock().unwrap().remove(&index).is_some();
+        if removed {
+            self.dirty.lock().unwrap().insert(index);
+        }
     }
 
     /// Remove **all** staged button images and send an empty configuration
-    /// to the device (clears all buttons).
+    /// to the device (clears all buttons). Forces a full layout resync.
     pub async fn clear_all_images(&self) -> Result<()> {
         self.button_images.lock().unwrap().clear();
+        self.dirty.lock().unwrap().clear();
+        *self.synced.lock().unwrap() = false;
         self.flush().await
     }
 
-    /// Send the currently staged button images to the device.
-    /// Uses unique filenames per flush to force device to reload icons.
-    /// Bounded retries – returns error if a valid ZIP cannot be built.
-    pub async fn flush(&self) -> Result<()> {
-        debug!("Building button configuration ZIP with bug workaround");
+    /// Map a button index to the manifest grid key(s) it occupies.
+    ///
+    /// The layout is a 5×3 grid addressed as `col_row`. Button 13 is the wide
+    /// button, which spans the bottom two right‑hand cells (`3_2` and `4_2`).
+    fn index_to_keys(index: usize) -> Vec<String> {
+        if index == 13 {
+            vec!["3_2".to_string(), "4_2".to_string()]
+        } else {
+            let col = index % 5;
+            let row = index / 5;
+            vec![format!("{}_{}", col, row)]
+        }
+    }
 
-        let images_snapshot = {
+    /// A random `Images/<id>.png` archive path. A fresh name per send forces
+    /// the device to reload the icon (it caches by path), mirroring the
+    /// official app's per‑transfer UUID filenames.
+    fn random_image_path() -> String {
+        let name: String = rngs::ThreadRng::default()
+            .sample_iter(&Alphanumeric)
+            .take(32)
+            .map(char::from)
+            .collect();
+        format!("Images/{}.png", name)
+    }
+
+    /// `ViewParam` entry for a button that displays an icon, matching the
+    /// official app's manifest format.
+    fn icon_view_param(icon_path: &str) -> serde_json::Value {
+        json!({
+            "Font": {
+                "Align": "bottom",
+                "Color": 16777215,
+                "FontName": "Source Han Sans SC",
+                "ShowTitle": true,
+                "Size": 10,
+                "Weight": 80
+            },
+            "Icon": icon_path,
+            "Text": ""
+        })
+    }
+
+    /// `ViewParam` entry for an empty (iconless) button.
+    fn empty_view_param() -> serde_json::Value {
+        json!({ "Font": "", "Text": "" })
+    }
+
+    /// Build a clean configuration ZIP in the device's native format:
+    /// an `Images/` directory, one `Images/<id>.png` per icon, and a
+    /// `manifest.json` mapping grid keys to their view parameters.
+    ///
+    /// `entries` is a list of `(keys, image)` pairs; all keys in a pair share
+    /// the same (single) image when one is present.
+    fn build_zip(entries: &[(Vec<String>, Option<Vec<u8>>)]) -> Result<Vec<u8>> {
+        let mut cursor = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::ZipWriter::new(&mut cursor);
+            let deflated =
+                FileOptions::<()>::default().compression_method(zip::CompressionMethod::Deflated);
+
+            zip.add_directory("Images", deflated)?;
+
+            let mut manifest = serde_json::Map::new();
+            for (keys, image) in entries {
+                let view_param = if let Some(png) = image {
+                    let path = Self::random_image_path();
+                    zip.start_file(&path, deflated)?;
+                    zip.write_all(png)?;
+                    Self::icon_view_param(&path)
+                } else {
+                    Self::empty_view_param()
+                };
+                let entry = json!({ "State": 0, "ViewParam": [view_param] });
+                for key in keys {
+                    manifest.insert(key.clone(), entry.clone());
+                }
+            }
+
+            zip.start_file("manifest.json", deflated)?;
+            zip.write_all(serde_json::to_string(&serde_json::Value::Object(manifest))?.as_bytes())?;
+
+            zip.finish()?;
+        }
+        Ok(cursor.into_inner())
+    }
+
+    /// Push staged button images to the device using the native protocol.
+    ///
+    /// The first sync after connecting (or after `clear_all_images`) sends the
+    /// complete layout via `OutSetButtons` (`0x0001`). Subsequent changes are
+    /// sent as per‑button incremental updates via `OutSetButtonIcon` (`0x000d`),
+    /// exactly as the official application does. This keeps each transfer small
+    /// and avoids re‑uploading every button on every change.
+    pub async fn flush(&self) -> Result<()> {
+        let images = {
             let map = self.button_images.lock().unwrap();
             map.clone()
         };
 
-        const INVALID_BYTES: [u8; 2] = [0x00, 0x7c];
-        const MAX_RETRIES: usize = 1000;
+        let need_full = !*self.synced.lock().unwrap();
 
-        let mut dummy_retries = 0;
-        let mut zip_data = Vec::new();
+        if need_full {
+            let entries: Vec<(Vec<String>, Option<Vec<u8>>)> = (0..NUM_BUTTONS)
+                .map(|id| (Self::index_to_keys(id), images.get(&id).cloned()))
+                .collect();
 
-        loop {
-            let flush_id = FLUSH_COUNTER.fetch_add(1, Ordering::Relaxed);
-            zip_data.clear();
-            let mut cursor = Cursor::new(Vec::new());
-            {
-                let mut zip = zip::ZipWriter::new(&mut cursor);
-                let stored = FileOptions::<()>::default()
-                    .compression_method(zip::CompressionMethod::Stored);
-                let deflated = FileOptions::<()>::default()
-                    .compression_method(zip::CompressionMethod::Deflated);
+            let zip = Self::build_zip(&entries)?;
+            self.send_file(CommandProtocol::OutSetButtons, &zip).await?;
 
-                // Dummy file – content grows aggressively
-                // let dummy_content = "x".repeat(128 * dummy_retries);
-                let dummy_content: String = rngs::ThreadRng::default()
-                    .sample_iter(&Alphanumeric)
-                    .take(1024 * dummy_retries)
-                    .map(char::from)
-                    .collect();
+            *self.synced.lock().unwrap() = true;
+            self.dirty.lock().unwrap().clear();
+            debug!("Sent full button layout ({} bytes)", zip.len());
+        } else {
+            let dirty: Vec<usize> = {
+                let set = self.dirty.lock().unwrap();
+                let mut v: Vec<usize> = set.iter().copied().collect();
+                v.sort_unstable();
+                v
+            };
 
-                zip.start_file("dummy.txt", stored)?;
-                zip.write_all(dummy_content.as_bytes())?;
-
-                let mut manifest = json!({});
-
-                let mut numbers: Vec<usize> = (0..NUM_BUTTONS).collect();
-                numbers.shuffle(&mut rngs::ThreadRng::default());
-                for (index, value) in numbers.into_iter().enumerate() {
-                    if value == 13 {
-                        let key1 = "3_2";
-                        let key2 = "4_2";
-                        let mut view_param = json!({ "Text": "" });
-
-                        if let Some(img_data) = images_snapshot.get(&13) {
-                            let icon_name = format!("{}_{}_{}.png", index, value, flush_id);
-                            zip.start_file(format!("icons/{}", icon_name), deflated)?;
-                            zip.write_all(img_data)?;
-                            view_param["Icon"] = json!(format!("icons/{}", icon_name));
-                        } else {
-                            view_param["Icon"] = json!("");
-                        }
-
-                        let entry = json!({ "State": 0, "ViewParam": [view_param] });
-                        manifest[key1] = entry.clone();
-                        manifest[key2] = entry;
-                    } else {
-                        let col = value % 5;
-                        let row = value / 5;
-                        let key = format!("{}_{}", col, row);
-                        let mut view_param = json!({ "Text": "" });
-
-                        if let Some(img_data) = images_snapshot.get(&value) {
-                            let icon_name = format!("{}_{}_{}.png", index, value, flush_id);
-                            zip.start_file(format!("icons/{}", icon_name), deflated)?;
-                            zip.write_all(img_data)?;
-                            view_param["Icon"] = json!(format!("icons/{}", icon_name));
-                        } else {
-                            view_param["Icon"] = json!("");
-                        }
-
-                        manifest[key] = json!({ "State": 0, "ViewParam": [view_param] });
-                    }
-                }
-
-                zip.start_file("manifest.json", deflated)?;
-                zip.write_all(serde_json::to_string(&manifest)?.as_bytes())?;
-
-                zip.start_file("sentinel.txt", deflated)?;
-                zip.write_all(b"")?;
-
-                zip.finish()?;
+            for id in dirty {
+                let entry = (Self::index_to_keys(id), images.get(&id).cloned());
+                let zip = Self::build_zip(std::slice::from_ref(&entry))?;
+                self.send_file(CommandProtocol::OutSetButtonIcon, &zip).await?;
+                // Only clear once the transfer succeeded, so a failure leaves
+                // the button dirty for the next flush.
+                self.dirty.lock().unwrap().remove(&id);
+                debug!("Sent incremental update for button {} ({} bytes)", id, zip.len());
             }
-
-            zip_data = cursor.into_inner();
-
-            let file_size = zip_data.len();
-            let mut valid = true;
-            for offset in (1016..file_size).step_by(1024) {
-                if let Some(&byte) = zip_data.get(offset) {
-                    if INVALID_BYTES.contains(&byte) {
-                        debug!(
-                            "Invalid byte 0x{:02x} at offset {} (retry {})",
-                            byte, offset, dummy_retries
-                        );
-                        valid = false;
-                        break;
-                    }
-                }
-            }
-
-            if valid {
-                debug!("ZIP archive passed the byte‑offset check ({} retries)", dummy_retries);
-                break;
-            }
-
-            dummy_retries += 1;
-            if dummy_retries >= MAX_RETRIES {
-                return Err(anyhow!(
-                    "Failed to build a valid ZIP after {} retries – giving up",
-                    MAX_RETRIES
-                ));
-            }
-            tokio::time::sleep(Duration::from_millis(1)).await;
         }
 
-        self.send_file(&zip_data).await?;
-        debug!("Successfully sent button configuration ({} bytes)", zip_data.len());
         Ok(())
     }
 
@@ -441,25 +466,35 @@ impl UlanziDevice {
         Ok(())
     }
 
-    async fn send_file(&self, data: &[u8]) -> Result<()> {
+    /// Stream a payload to the device as a framed multi‑packet transfer.
+    ///
+    /// The first packet carries the 8‑byte header (`7c 7c | cmd | total_len`)
+    /// followed by up to `MAX_COMMAND_PAYLOAD` payload bytes; every subsequent
+    /// packet is a raw 1024‑byte continuation chunk of the remaining payload.
+    /// `command` selects the transfer type (e.g. full layout vs. icon update).
+    /// The writer lock is held for the whole transfer so no other command can
+    /// be interleaved between continuation packets.
+    async fn send_file(&self, command: CommandProtocol, data: &[u8]) -> Result<()> {
         let file_size = data.len() as u32;
-        debug!("Sending icon data! ({} bytes)", file_size);
-        let first_chunk = if data.len() >= 1016 {
-            &data[..1016]
+        debug!(
+            "Sending file via command 0x{:04x} ({} bytes)",
+            command as u16, file_size
+        );
+
+        let first_chunk = if data.len() >= MAX_COMMAND_PAYLOAD {
+            &data[..MAX_COMMAND_PAYLOAD]
         } else {
             data
         };
-        let first_packet =
-            self.build_packet(CommandProtocol::OutSetButtons, first_chunk, file_size);
+        let first_packet = self.build_packet(command, first_chunk, file_size);
 
         let mut writer = self.writer.lock().await;
         writer.write_output_report(&first_packet).await?;
 
-        if data.len() > 1016 {
-            for chunk in data[1016..].chunks(1024) {
+        if data.len() > MAX_COMMAND_PAYLOAD {
+            for chunk in data[MAX_COMMAND_PAYLOAD..].chunks(PACKET_SIZE) {
                 let mut packet = [0u8; PACKET_SIZE];
-                let len = chunk.len().min(PACKET_SIZE);
-                packet[..len].copy_from_slice(&chunk[..len]);
+                packet[..chunk.len()].copy_from_slice(chunk);
                 writer.write_output_report(&packet).await?;
             }
         }
@@ -507,5 +542,97 @@ mod tests {
     fn test_generate_id_without_serial() {
         let id = UlanziDevice::generate_id(None, "fallback");
         assert_eq!(id, "e9-fallback");
+    }
+
+    #[test]
+    fn test_index_to_keys() {
+        assert_eq!(UlanziDevice::index_to_keys(0), vec!["0_0"]);
+        assert_eq!(UlanziDevice::index_to_keys(4), vec!["4_0"]);
+        assert_eq!(UlanziDevice::index_to_keys(5), vec!["0_1"]);
+        assert_eq!(UlanziDevice::index_to_keys(12), vec!["2_2"]);
+        // Wide button spans the bottom two right‑hand cells.
+        assert_eq!(UlanziDevice::index_to_keys(13), vec!["3_2", "4_2"]);
+    }
+
+    fn read_zip(bytes: &[u8]) -> zip::ZipArchive<Cursor<Vec<u8>>> {
+        zip::ZipArchive::new(Cursor::new(bytes.to_vec())).expect("valid zip")
+    }
+
+    fn manifest_of(zip: &mut zip::ZipArchive<Cursor<Vec<u8>>>) -> serde_json::Value {
+        use std::io::Read;
+        let mut s = String::new();
+        zip.by_name("manifest.json")
+            .expect("manifest.json present")
+            .read_to_string(&mut s)
+            .unwrap();
+        serde_json::from_str(&s).expect("valid manifest json")
+    }
+
+    #[test]
+    fn test_incremental_zip_matches_official_format() {
+        // A single-button update, as the official app sends via 0x000d.
+        let png = b"\x89PNG\r\n\x1a\nFAKEIMAGEDATA".to_vec();
+        let entry = (UlanziDevice::index_to_keys(0), Some(png.clone()));
+        let bytes = UlanziDevice::build_zip(std::slice::from_ref(&entry)).unwrap();
+
+        let mut zip = read_zip(&bytes);
+        let names: Vec<String> = zip.file_names().map(|s| s.to_string()).collect();
+
+        // Native container: an Images/ directory entry + exactly one png + manifest.
+        assert!(names.iter().any(|n| n == "Images/"), "missing Images/ dir: {names:?}");
+        assert!(names.iter().any(|n| n == "manifest.json"));
+        let png_name = names
+            .iter()
+            .find(|n| n.starts_with("Images/") && n.ends_with(".png"))
+            .expect("one Images/<id>.png entry")
+            .clone();
+
+        // No leftover hack files from the previous implementation.
+        assert!(!names.iter().any(|n| n == "dummy.txt"));
+        assert!(!names.iter().any(|n| n == "sentinel.txt"));
+
+        // The stored png bytes round-trip unchanged.
+        {
+            use std::io::Read;
+            let mut data = Vec::new();
+            zip.by_name(&png_name).unwrap().read_to_end(&mut data).unwrap();
+            assert_eq!(data, png);
+        }
+
+        // Manifest references the icon with the official ViewParam shape.
+        let manifest = manifest_of(&mut zip);
+        let vp = &manifest["0_0"]["ViewParam"][0];
+        assert_eq!(vp["Icon"], serde_json::json!(png_name));
+        assert_eq!(vp["Text"], serde_json::json!(""));
+        assert_eq!(vp["Font"]["FontName"], serde_json::json!("Source Han Sans SC"));
+        assert_eq!(manifest["0_0"]["State"], serde_json::json!(0));
+    }
+
+    #[test]
+    fn test_full_layout_zip_has_all_keys() {
+        // Full layout (0x0001): every grid cell present, only button 7 has an icon.
+        let png = b"\x89PNGicon".to_vec();
+        let mut images: HashMap<usize, Vec<u8>> = HashMap::new();
+        images.insert(7, png.clone());
+
+        let entries: Vec<(Vec<String>, Option<Vec<u8>>)> = (0..NUM_BUTTONS)
+            .map(|id| (UlanziDevice::index_to_keys(id), images.get(&id).cloned()))
+            .collect();
+        let bytes = UlanziDevice::build_zip(&entries).unwrap();
+
+        let mut zip = read_zip(&bytes);
+        let manifest = manifest_of(&mut zip);
+        let obj = manifest.as_object().unwrap();
+
+        // 13 single-cell buttons + the wide button's two cells = 15 grid keys.
+        assert_eq!(obj.len(), 15);
+        for key in ["0_0", "4_0", "0_1", "2_2", "3_2", "4_2"] {
+            assert!(obj.contains_key(key), "missing key {key}");
+        }
+
+        // Button 7 -> key 2_1 carries the icon; an empty cell uses Font: "".
+        assert!(manifest["2_1"]["ViewParam"][0]["Icon"].is_string());
+        assert_eq!(manifest["0_0"]["ViewParam"][0]["Font"], serde_json::json!(""));
+        assert!(manifest["0_0"]["ViewParam"][0].get("Icon").is_none());
     }
 }
