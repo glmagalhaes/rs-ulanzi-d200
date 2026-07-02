@@ -71,7 +71,6 @@ pub struct ButtonEvent {
 #[derive(Clone)] // if you need cloning
 pub struct ButtonImageData {
     pub image: Vec<u8>,
-    pub sent: bool,
     pub uuid: Uuid,
 }
 
@@ -293,7 +292,6 @@ impl UlanziDevice {
         if changed {
             map.insert(index, ButtonImageData {
                 image: png_data,
-                sent: false,
                 uuid: Uuid::now_v7(),
             });
         }
@@ -340,8 +338,6 @@ impl UlanziDevice {
             let mut cursor = Cursor::new(Vec::new());
             {
                 let mut zip = zip::ZipWriter::new(&mut cursor);
-                let stored = FileOptions::<()>::default()
-                    .compression_method(zip::CompressionMethod::Stored);
                 let deflated = FileOptions::<()>::default()
                     .compression_method(zip::CompressionMethod::Deflated);
 
@@ -353,21 +349,22 @@ impl UlanziDevice {
                     .map(char::from)
                     .collect();
 
-                zip.start_file("dummy.txt", stored)?;
+                zip.start_file("dummy.txt", deflated)?;
                 zip.write_all(dummy_content.as_bytes())?;
 
                 let mut manifest = json!({});
 
                 let mut numbers: Vec<usize> = (0..NUM_BUTTONS).collect();
                 numbers.shuffle(&mut rngs::ThreadRng::default());
-                for (_index, value) in numbers.into_iter().enumerate() {
+                for (index, value) in numbers.into_iter().enumerate() {
                     let col = value % 5;
                     let row = value / 5;
                     let key = format!("{}_{}", col, row);
                     let mut view_param = json!({ "Text": "" });
 
                     if let Some(img_data) = images_snapshot.get_mut(&value) {
-                        let icon_name = format!("{}.png", img_data.uuid);
+                        // let icon_name = format!("{}.png", img_data.uuid);
+                        let icon_name = format!("{}_{}.png", index, img_data.uuid);
                         zip.start_file(format!("Images/{}", icon_name), deflated)?;
                         zip.write_all(&img_data.image)?;
                         view_param["Icon"] = json!(format!("Images/{}", icon_name));
@@ -419,8 +416,9 @@ impl UlanziDevice {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
 
+        info!("Sent button configuration ({} bytes)", zip_data.len());
         self.send_file(&zip_data).await?;
-        debug!("Successfully sent button configuration ({} bytes)", zip_data.len());
+        info!("Successfully sent button configuration ({} bytes)", zip_data.len());
         Ok(())
     }
 
