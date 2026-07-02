@@ -112,5 +112,13 @@ Contributions are welcome! Please:
 - Use the [GitLab](https://gitlab.com/glmagalhaes.mail/rs-ulanzi-d-200-linux) repository (the GitHub mirror is read‑only).
 - Open an issue first to discuss major changes.
 
+## Support the Project
+
+If you find this plugin useful, consider supporting its development with a donation via Pix.
+
+![Pix QR Code](assets/pix-qr-code.png)
+
+**Pix key:** `glmagalhaes@hotmail.com` 
+
 ## License
 This project is licensed under the GNU Affero General Public License v3.0 – see the LICENSE file for details.

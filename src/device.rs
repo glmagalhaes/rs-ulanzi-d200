@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::io::{Cursor, Write};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use async_hid::{AsyncHidWrite, DeviceReader, DeviceWriter, HidBackend};
@@ -13,6 +12,7 @@ use log::{debug, info, warn};
 use rand::{rngs, RngExt, distr::Alphanumeric};
 use rand::seq::SliceRandom;
 use serde_json::json;
+use tokio::time::Duration;
 use tokio::sync::Mutex as TokioMutex;
 use zip::write::FileOptions;
 
@@ -323,7 +323,7 @@ impl UlanziDevice {
     pub async fn flush(&self) -> Result<()> {
         debug!("Building button configuration ZIP with bug workaround");
 
-        let images_snapshot = {
+        let mut images_snapshot = {
             let map = self.button_images.lock().unwrap();
             map.clone()
         };
@@ -360,41 +360,22 @@ impl UlanziDevice {
 
                 let mut numbers: Vec<usize> = (0..NUM_BUTTONS).collect();
                 numbers.shuffle(&mut rngs::ThreadRng::default());
-                for (index, value) in numbers.into_iter().enumerate() {
-                    if value == 13 {
-                        let key1 = "3_2";
-                        let key2 = "4_2";
-                        let mut view_param = json!({ "Text": "" });
+                for (_index, value) in numbers.into_iter().enumerate() {
+                    let col = value % 5;
+                    let row = value / 5;
+                    let key = format!("{}_{}", col, row);
+                    let mut view_param = json!({ "Text": "" });
 
-                        if let Some(img_data) = images_snapshot.get(&13) {
-                            let icon_name = format!("{}.png", img_data.uuid);
-                            zip.start_file(format!("Images/{}", icon_name), deflated)?;
-                            zip.write_all(&img_data.image)?;
-                            view_param["Icon"] = json!(format!("Images/{}", icon_name));
-                        } else {
-                            view_param["Icon"] = json!("");
-                        }
-
-                        let entry = json!({ "State": 0, "ViewParam": [view_param] });
-                        manifest[key1] = entry.clone();
-                        manifest[key2] = entry;
+                    if let Some(img_data) = images_snapshot.get_mut(&value) {
+                        let icon_name = format!("{}.png", img_data.uuid);
+                        zip.start_file(format!("Images/{}", icon_name), deflated)?;
+                        zip.write_all(&img_data.image)?;
+                        view_param["Icon"] = json!(format!("Images/{}", icon_name));
                     } else {
-                        let col = value % 5;
-                        let row = value / 5;
-                        let key = format!("{}_{}", col, row);
-                        let mut view_param = json!({ "Text": "" });
-
-                        if let Some(img_data) = images_snapshot.get(&value) {
-                            let icon_name = format!("{}.png", img_data.uuid);
-                            zip.start_file(format!("Images/{}", icon_name), deflated)?;
-                            zip.write_all(&img_data.image)?;
-                            view_param["Icon"] = json!(format!("Images/{}", icon_name));
-                        } else {
-                            view_param["Icon"] = json!("");
-                        }
-
-                        manifest[key] = json!({ "State": 0, "ViewParam": [view_param] });
+                        view_param["Icon"] = json!("");
                     }
+
+                    manifest[key] = json!({ "State": 0, "ViewParam": [view_param] });
                 }
 
                 zip.start_file("manifest.json", deflated)?;
@@ -410,7 +391,7 @@ impl UlanziDevice {
 
             let file_size = zip_data.len();
             let mut valid = true;
-            for offset in (1016..file_size).step_by(1024) {
+            for offset in (92152..file_size).step_by(1024) {
                 if let Some(&byte) = zip_data.get(offset) {
                     if INVALID_BYTES.contains(&byte) {
                         debug!(
