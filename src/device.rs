@@ -16,6 +16,8 @@ use serde_json::json;
 use tokio::sync::Mutex as TokioMutex;
 use zip::write::FileOptions;
 
+use uuid::Uuid;
+
 use image::{DynamicImage, GenericImageView, RgbImage, RgbaImage};
 
 // ---------------------------------------------------------------------------
@@ -63,6 +65,17 @@ pub struct ButtonEvent {
 }
 
 // ---------------------------------------------------------------------------
+// Button data structure
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)] // if you need cloning
+pub struct ButtonImageData {
+    pub image: Vec<u8>,
+    pub sent: bool,
+    pub uuid: Uuid,
+}
+
+// ---------------------------------------------------------------------------
 // Device handle
 // ---------------------------------------------------------------------------
 
@@ -70,7 +83,7 @@ pub struct UlanziDevice {
     writer: Arc<TokioMutex<DeviceWriter>>,
     reader: Option<DeviceReader>,
     id: String,
-    button_images: Mutex<HashMap<usize, Vec<u8>>>,
+    button_images: Mutex<HashMap<usize, ButtonImageData>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -273,12 +286,16 @@ impl UlanziDevice {
 
         let mut map = self.button_images.lock().unwrap();
         let changed = match map.get(&index) {
-            Some(old) => *old != png_data,
+            Some(existing) => existing.image != png_data,
             None => true,
         };
 
         if changed {
-            map.insert(index, png_data);
+            map.insert(index, ButtonImageData {
+                image: png_data,
+                sent: false,
+                uuid: Uuid::now_v7(),
+            });
         }
 
         Ok(changed)
@@ -350,10 +367,10 @@ impl UlanziDevice {
                         let mut view_param = json!({ "Text": "" });
 
                         if let Some(img_data) = images_snapshot.get(&13) {
-                            let icon_name = format!("{}_{}_{}.png", index, value, flush_id);
-                            zip.start_file(format!("icons/{}", icon_name), deflated)?;
-                            zip.write_all(img_data)?;
-                            view_param["Icon"] = json!(format!("icons/{}", icon_name));
+                            let icon_name = format!("{}.png", img_data.uuid);
+                            zip.start_file(format!("Images/{}", icon_name), deflated)?;
+                            zip.write_all(&img_data.image)?;
+                            view_param["Icon"] = json!(format!("Images/{}", icon_name));
                         } else {
                             view_param["Icon"] = json!("");
                         }
@@ -368,10 +385,10 @@ impl UlanziDevice {
                         let mut view_param = json!({ "Text": "" });
 
                         if let Some(img_data) = images_snapshot.get(&value) {
-                            let icon_name = format!("{}_{}_{}.png", index, value, flush_id);
-                            zip.start_file(format!("icons/{}", icon_name), deflated)?;
-                            zip.write_all(img_data)?;
-                            view_param["Icon"] = json!(format!("icons/{}", icon_name));
+                            let icon_name = format!("{}.png", img_data.uuid);
+                            zip.start_file(format!("Images/{}", icon_name), deflated)?;
+                            zip.write_all(&img_data.image)?;
+                            view_param["Icon"] = json!(format!("Images/{}", icon_name));
                         } else {
                             view_param["Icon"] = json!("");
                         }
